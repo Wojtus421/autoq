@@ -68,7 +68,6 @@
   };
 
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const SCRIPT_VERSION = '10.1';
   let running = false;
   const log = (...a) => CFG.debug && console.log('%c[MQ]', 'color:#6cf;font-weight:bold', ...a);
   const safe = fn => { try { return fn(); } catch (e) { return null; } };
@@ -1373,23 +1372,6 @@
     makeKeybindRow('Rozmowa / interakcja', 'keyTalk', LS_KEY_TALK);
     makeKeybindRow('Atak', 'keyAttack', LS_KEY_ATTACK);
 
-    const sep2 = document.createElement('div');
-    sep2.style.cssText = 'margin-top:8px;border-top:1px solid #444;padding-top:6px;';
-    panel.appendChild(sep2);
-
-    const testRow = document.createElement('label');
-    testRow.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:default;';
-    const testCb = document.createElement('input');
-    testCb.type = 'checkbox';
-    testCb.checked = true;
-    testCb.disabled = true;
-    testRow.appendChild(testCb);
-    const testLabel = document.createElement('span');
-    testLabel.textContent = 'TEST (v' + SCRIPT_VERSION + ')';
-    testLabel.style.color = '#8f8';
-    testRow.appendChild(testLabel);
-    panel.appendChild(testRow);
-
     const hint = document.createElement('div');
     hint.textContent = 'Dotyczy okienek wyboru nagrody. Inne pytania: zawsze lewa opcja. ' +
       'Zmiana klawisza: kliknij przycisk i wciśnij nowy klawisz (Esc anuluje).';
@@ -1470,6 +1452,6 @@
       updateBadge();
       log('stan z poprzedniej sesji: WŁĄCZONY — wznawiam automatycznie');
     }
-    log('AutoQ v' + SCRIPT_VERSION + ' gotowe → klik: włącz/wyłącz | PPM na wskaźnik: ustawienia (exp, klawisze) | Ctrl+Shift+Q: to samo co klik');
+    log('AutoQ v10.2 gotowe → klik: włącz/wyłącz | PPM na wskaźnik: ustawienia (exp, klawisze) | Ctrl+Shift+Q: to samo co klik');
   }, 500);
 })();
