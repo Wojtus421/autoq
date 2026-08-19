@@ -1,15 +1,21 @@
 // ==UserScript==
-// @name         AutoQ — Margonem auto quest v9.4
+// @name         AutoQ — Margonem auto quest v9.5
 // @namespace    Wojtus
-// @version      9.4
-// @description  Konfigurowalne klawisze rozmowy/ataku (domyślnie Q/E) w panelu ustawień — zapisywane między sesjami
+// @version      9.5
+// @description  TEST: wizualny checkbox w panelu ustawień do weryfikacji auto-update z GitHuba
 // @match        https://*.margonem.pl/*
 // @grant        none
 // @run-at       document-start
+// @downloadURL  https://github.com/Wojtus421/autoq/raw/refs/heads/main/autoq.user.js
+// @updateURL    https://github.com/Wojtus421/autoq/raw/refs/heads/main/autoq.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
+
+  // trzymana ręcznie w zgodzie z @version powyżej — używana wyłącznie do
+  // wizualnego potwierdzenia w panelu ustawień, że auto-update się pobrał
+  const SCRIPT_VERSION = '9.5';
 
   const BITS = {
     OPTION: 2, EXIT: 4, NEW_QUEST: 8, CONT_QUEST: 16, SHOP: 32, ATTACK: 64,
@@ -1651,6 +1657,25 @@
     makeKeybindRow('Rozmowa / interakcja', 'keyTalk', LS_KEY_TALK);
     makeKeybindRow('Atak', 'keyAttack', LS_KEY_ATTACK);
 
+    const sep2 = document.createElement('div');
+    sep2.style.cssText = 'margin-top:8px;border-top:1px solid #444;padding-top:6px;';
+    panel.appendChild(sep2);
+
+    // czysto wizualny znacznik — potwierdza, że ta konkretna wersja (z auto-update)
+    // faktycznie się pobrała; nic nie robi, niczego nie zapisuje, brak logiki
+    const testRow = document.createElement('label');
+    testRow.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:default;';
+    const testCb = document.createElement('input');
+    testCb.type = 'checkbox';
+    testCb.checked = true;
+    testCb.disabled = true;
+    testRow.appendChild(testCb);
+    const testLabel = document.createElement('span');
+    testLabel.textContent = 'TEST (v' + SCRIPT_VERSION + ')';
+    testLabel.style.color = '#8f8';
+    testRow.appendChild(testLabel);
+    panel.appendChild(testRow);
+
     const hint = document.createElement('div');
     hint.textContent = 'Dotyczy okienek wyboru nagrody. Inne pytania: zawsze lewa opcja. ' +
       'Zmiana klawisza: kliknij przycisk i wciśnij nowy klawisz (Esc anuluje).';
@@ -1732,6 +1757,6 @@
       updateBadge();
       log('stan z poprzedniej sesji: WŁĄCZONY — wznawiam automatycznie');
     }
-    log('AutoQ v9.4 gotowe → klik: włącz/wyłącz | PPM na wskaźnik: ustawienia (exp, klawisze) | Ctrl+Shift+Q: to samo co klik');
+    log('AutoQ v9.5 gotowe → klik: włącz/wyłącz | PPM na wskaźnik: ustawienia (exp, klawisze) | Ctrl+Shift+Q: to samo co klik');
   }, 500);
 })();
