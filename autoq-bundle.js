@@ -41,6 +41,7 @@
     minSendGapMs: 250,
     maxSendPer10s: 18,
     idleFallbackMs: 10000,
+    navScanMs: 3000, // cykliczny skan nawigacji w stanie NAV — nie czekamy pełnych idleFallbackMs na bezruch
     questBitPriority: [BITS.CONT_QUEST, BITS.NEW_QUEST],
     avoidBits: [BITS.EXIT],
     skipRe: /pomiń/i,
@@ -1140,13 +1141,20 @@
     }
 
     const lastActivity = Math.max(lastMoveAt, lastClickAt, lastTalkAt, lastDialogueAt);
-    if (now - lastActivity > CFG.idleFallbackMs) {
+    // W stanie NAV nie czekamy pełnych idleFallbackMs — skanujemy cyklicznie co navScanMs,
+    // żeby bot nie "zamierał" w oczekiwaniu na wykrycie bezczynności. W pozostałych stanach
+    // (ARRIVED, itp.) zostaje dłuższy, bezpieczniejszy próg idleFallbackMs.
+    const scanThreshold = state === 'NAV' ? CFG.navScanMs : CFG.idleFallbackMs;
+    if (now - lastActivity > scanThreshold) {
       lastTalkAt = now;
+      tplCache = { at: 0, val: [] };
+      knownNames.clear();
+      lastPtrLogged = '';
       const npc = (t && t.npc) || npcInfo(safe(() => E().questTracking.getNearTrackingNpc()));
       if (npc && gSend('talk&id=' + npc.id)) {
-        log('bezczynność ' + (CFG.idleFallbackMs / 1000) + 's — wymuszam rozmowę z', npc.name || npc.id);
+        log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
       } else if (!npc) {
-        log('bezczynność ' + (CFG.idleFallbackMs / 1000) + 's — brak NPC-celu, symuluję Q');
+        log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
         pressQ();
       }
       return;
