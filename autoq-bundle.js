@@ -76,7 +76,7 @@
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
   let running = false;
   const log = (...a) => CFG.debug && console.log('%c[MQ]', 'color:#6cf;font-weight:bold', ...a);
-  const safe = fn => { try { return fn(); } catch (e) { return null; } };
+  const safe = fn => { try { return fn(); } catch (e) { console.warn('%c[MQ] wyjątek złapany przez safe():', 'color:#f66;font-weight:bold', e); return null; } };
   const E = () => W.Engine;
   const ready = () => { const e = E(); return !!(e && e.allInit && e.hero && e.hero.d); };
 
@@ -678,6 +678,12 @@
   }
   function isWalkable(g, x, y) {
     if (!g || x < 0 || y < 0 || x >= g.w || y >= g.h) return false;
+    // Engine.map.col to obiekt z metodą check(x,y) (0 = wolne, każda inna
+    // wartość = zablokowane/poza mapą) — nie płaska tablica indeksowana ręcznie.
+    if (typeof g.col.check === 'function') {
+      const v = safe(() => g.col.check(x, y));
+      return v === 0;
+    }
     const c = g.col[y * g.w + x] ?? g.col[x + ',' + y];
     return !(c === 1 || c === true || c === '1');
   }
