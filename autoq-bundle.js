@@ -728,30 +728,10 @@
     return null;
   }
 
-  function pathToSegments(path) {
-    if (!path || path.length < 2) return [];
-    const segs = [];
-    let curDx = null, curDy = null, segEnd = null;
-    for (let i = 1; i < path.length; i++) {
-      const dx = Math.sign(path[i].x - path[i - 1].x), dy = Math.sign(path[i].y - path[i - 1].y);
-      if (dx !== curDx || dy !== curDy) {
-        if (curDx !== null) segs.push({ dx: curDx, dy: curDy, end: segEnd });
-        curDx = dx; curDy = dy;
-      }
-      segEnd = path[i];
-    }
-    segs.push({ dx: curDx, dy: curDy, end: segEnd });
-    return segs;
-  }
+  let movePath = [], moveIdx = -1, stepPending = false, movePlannedFor = '', moveLastPlanAt = 0;
 
-  let moveSegs = [], moveSegIdx = -1, moveHeldKey = null, movePlannedFor = '', moveLastPlanAt = 0;
-
-  function releaseMoveKey() {
-    if (moveHeldKey) { keyUpEvt(moveHeldKey); moveHeldKey = null; }
-  }
   function resetMovePlan() {
-    releaseMoveKey();
-    moveSegs = []; moveSegIdx = -1; movePlannedFor = '';
+    movePath = []; moveIdx = -1; stepPending = false; movePlannedFor = '';
   }
 
   function nearestWalkable(destTile, g, maxR) {
@@ -774,48 +754,48 @@
   function planPath(destTile) {
     const hero = E().hero.d;
     const g = gridInfo();
-    if (!g) { log('A*: brak danych kolizji dla mapy — nie mogę policzyć trasy'); releaseMoveKey(); moveSegs = []; moveSegIdx = -1; movePlannedFor = destTile.x + ',' + destTile.y; moveLastPlanAt = Date.now(); return false; }
+    if (!g) { log('A*: brak danych kolizji dla mapy — nie mogę policzyć trasy'); resetMovePlan(); movePlannedFor = destTile.x + ',' + destTile.y; moveLastPlanAt = Date.now(); return false; }
     // Cel (np. obiekt na ścianie) może stać na nieprzechodnim polu — wtedy
     // podchodzimy do najbliższego wolnego pola w sąsiedztwie, a nie na sam cel.
     const goal = nearestWalkable(destTile, g, Math.max(3, CFG.talkRadius + 2)) || destTile;
     const path = aStar({ x: hero.x, y: hero.y }, goal, g);
-    releaseMoveKey();
-    moveSegs = pathToSegments(path);
-    moveSegIdx = -1;
+    movePath = path || [];
+    moveIdx = 0;
+    stepPending = false;
     movePlannedFor = destTile.x + ',' + destTile.y;
     moveLastPlanAt = Date.now();
     if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y, '(cel podejścia:', goal.x + ',' + goal.y + ')');
-    else log('A*: trasa do', destTile.x + ',' + destTile.y, '(podejście:', goal.x + ',' + goal.y + ') —', moveSegs.length, 'segment(ów), start z', hero.x + ',' + hero.y);
+    else log('A*: trasa do', destTile.x + ',' + destTile.y, '(podejście:', goal.x + ',' + goal.y + ') —', (path.length - 1), 'krok(ów), start z', hero.x + ',' + hero.y);
     return !!path;
   }
 
   function driveMovement(destTile) {
     const now = Date.now();
     const wantKey = destTile.x + ',' + destTile.y;
-    const stalePlan = wantKey !== movePlannedFor || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
+    const stalePlan = wantKey !== movePlannedFor || (now - moveLastPlanAt > CFG.pathReplanMs && !stepPending);
     if (stalePlan && !planPath(destTile)) return;
     const hero = E().hero.d;
-    if (moveHeldKey) {
-      const seg = moveSegs[moveSegIdx];
-      if (seg && hero.x === seg.end.x && hero.y === seg.end.y) {
-        log('segment ukończony, pozycja', hero.x + ',' + hero.y, '— puszczam', keyName(moveHeldKey));
-        releaseMoveKey();
-        moveSegIdx++;
+
+    if (stepPending) {
+      const target = movePath[moveIdx];
+      if (target && hero.x === target.x && hero.y === target.y) {
+        stepPending = false;
       } else {
-        return; // wciąż w trakcie segmentu — trzymamy klawisz
+        return; // czekamy aż wykona się krok, który już wysłaliśmy
       }
-    } else if (moveSegIdx < 0) {
-      moveSegIdx = 0;
     }
-    if (moveSegIdx >= moveSegs.length) { log('trasa ukończona, pozycja', hero.x + ',' + hero.y); return; }
-    const seg = moveSegs[moveSegIdx];
-    const k = keyForDir(seg.dx, seg.dy);
-    if (!k) { moveSegIdx++; return; }
-    keyDownEvt(k);
-    moveHeldKey = k;
+
+    if (moveIdx >= movePath.length - 1) { log('trasa ukończona, pozycja', hero.x + ',' + hero.y); return; }
+    const cur = movePath[moveIdx], next = movePath[moveIdx + 1];
+    const dx = Math.sign(next.x - cur.x), dy = Math.sign(next.y - cur.y);
+    const k = keyForDir(dx, dy);
+    if (!k) { moveIdx++; return; }
+    tapKey(k);
+    moveIdx++;
+    stepPending = true;
     lastClickAt = now;
-    log('trzymam', keyName(k), 'z', hero.x + ',' + hero.y, 'do', seg.end.x + ',' + seg.end.y,
-        '(segment ' + (moveSegIdx + 1) + '/' + moveSegs.length + ')');
+    log('krok', keyName(k), cur.x + ',' + cur.y, '->', next.x + ',' + next.y,
+        '(' + moveIdx + '/' + (movePath.length - 1) + ')');
   }
   // ========================================================================
 
@@ -1304,7 +1284,7 @@
     // żeby bot nie "zamierał" w oczekiwaniu na wykrycie bezczynności. W pozostałych stanach
     // (ARRIVED, itp.) zostaje dłuższy, bezpieczniejszy próg idleFallbackMs.
     const scanThreshold = state === 'NAV' ? CFG.navScanMs : CFG.idleFallbackMs;
-    if (!moveHeldKey && now - lastActivity > scanThreshold) {
+    if (!stepPending && now - lastActivity > scanThreshold) {
       lastTalkAt = now;
       tplCache = { at: 0, val: [] };
       knownNames.clear();
@@ -1363,7 +1343,6 @@
       const arriveDist = t.npc ? CFG.talkRadius : 1;
 
       if (settled && dist <= arriveDist) {
-        releaseMoveKey();
         state = 'ARRIVED'; talkTries = 0;
         log('-> ARRIVED, dystans', dist, t.npc ? '' : '(cel-kafelek)');
         setTimeout(talkToTarget, jit(CFG.talkDelayMs) + hesitation());
@@ -1389,7 +1368,7 @@
         return;
       }
 
-      if (!inRange) navigateTo(t); else releaseMoveKey();
+      if (!inRange) navigateTo(t);
       return;
     }
 
