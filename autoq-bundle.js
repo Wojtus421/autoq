@@ -790,14 +790,12 @@
   }
 
   function driveMovement(destTile) {
-    const now = Date.now();
-    // Drobne przesunięcia celu (np. NPC robi krok w ramach idle-wander) nie
-    // powinny wywoływać pełnego przeliczenia trasy — tylko realna zmiana
-    // celu (>1 pole) albo okresowy interwał bezpieczeństwa. Bez tego bot
-    // co chwilę szarpał się w inną stronę za każdym mikro-ruchem NPC-a.
+    // Ustalamy trasę raz i trzymamy się jej. Jedyne powody, żeby ją przeliczyć:
+    // brak planu, albo cel realnie się przesunął (>1 pole — drobny idle-wander
+    // NPC-a to nie powód). Utknięcie na trasie obsługuje osobno navStuckMs
+    // w głównym ticku (resetMovePlan + wymuszony replan przy realnym bezruchu).
     const driftedFar = !plannedDest || chebyshev(destTile, plannedDest) > 1;
-    const stalePlan = driftedFar || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
-    if (stalePlan && !planPath(destTile)) return;
+    if (driftedFar && !planPath(destTile)) return;
     const hero = E().hero.d;
     if (moveHeldKey) {
       const seg = moveSegs[moveSegIdx];
@@ -817,7 +815,7 @@
     if (!k) { moveSegIdx++; return; }
     keyDownEvt(k);
     moveHeldKey = k;
-    lastClickAt = now;
+    lastClickAt = Date.now();
     log('trzymam', keyName(k), 'z', hero.x + ',' + hero.y, 'do', seg.end.x + ',' + seg.end.y,
         '(segment ' + (moveSegIdx + 1) + '/' + moveSegs.length + ')');
   }
