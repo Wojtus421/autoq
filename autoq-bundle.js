@@ -42,7 +42,6 @@
     keyLeft: { key: 'a', code: 'KeyA', keyCode: 65 },
     keyRight: { key: 'd', code: 'KeyD', keyCode: 68 },
     pathReplanMs: 4000, // okresowe przeliczenie trasy A* nawet bez utknięcia (dynamiczne przeszkody)
-    moveWatchMs: 80, // szybszy, niezależny od tickMs poller sprawdzający czy dojechaliśmy do końca segmentu — precyzyjniejsze puszczanie klawisza
     itemFallbackEnabled: false,
     minSendGapMs: 250,
     maxSendPer10s: 18,
@@ -790,31 +789,28 @@
     return !!path;
   }
 
-  function checkMoveProgress() {
-    if (!moveHeldKey) return;
-    const hero = safe(() => E().hero.d);
-    if (!hero) return;
-    const seg = moveSegs[moveSegIdx];
-    if (seg && hero.x === seg.end.x && hero.y === seg.end.y) {
-      log('segment ukończony, pozycja', hero.x + ',' + hero.y, '— puszczam', keyName(moveHeldKey));
-      releaseMoveKey();
-      moveSegIdx++;
-    }
-  }
-
   function driveMovement(destTile) {
     const now = Date.now();
     const wantKey = destTile.x + ',' + destTile.y;
     const stalePlan = wantKey !== movePlannedFor || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
     if (stalePlan && !planPath(destTile)) return;
-    checkMoveProgress();
-    if (moveHeldKey) return; // wciąż w trakcie segmentu — trzymamy klawisz (szybszy poller go puści)
-    if (moveSegIdx < 0) moveSegIdx = 0;
-    if (moveSegIdx >= moveSegs.length) { log('trasa ukończona, pozycja', E().hero.d.x + ',' + E().hero.d.y); return; }
+    const hero = E().hero.d;
+    if (moveHeldKey) {
+      const seg = moveSegs[moveSegIdx];
+      if (seg && hero.x === seg.end.x && hero.y === seg.end.y) {
+        log('segment ukończony, pozycja', hero.x + ',' + hero.y, '— puszczam', keyName(moveHeldKey));
+        releaseMoveKey();
+        moveSegIdx++;
+      } else {
+        return; // wciąż w trakcie segmentu — trzymamy klawisz
+      }
+    } else if (moveSegIdx < 0) {
+      moveSegIdx = 0;
+    }
+    if (moveSegIdx >= moveSegs.length) { log('trasa ukończona, pozycja', hero.x + ',' + hero.y); return; }
     const seg = moveSegs[moveSegIdx];
     const k = keyForDir(seg.dx, seg.dy);
     if (!k) { moveSegIdx++; return; }
-    const hero = E().hero.d;
     keyDownEvt(k);
     moveHeldKey = k;
     lastClickAt = now;
@@ -1433,12 +1429,6 @@
     safe(decisionTick);
     decTimer = setTimeout(loopDecision, CFG.decisionPollMs);
   }
-  let moveWatchTimer = null;
-  function loopMoveWatch() {
-    if (!running) return;
-    safe(checkMoveProgress);
-    moveWatchTimer = setTimeout(loopMoveWatch, CFG.moveWatchMs);
-  }
 
   const start = () => {
     if (running) return;
@@ -1450,7 +1440,6 @@
     loopTick();
     loopDialogue();
     loopDecision();
-    loopMoveWatch();
     log('start');
     safe(updateBadge);
   };
@@ -1459,7 +1448,6 @@
     clearTimeout(timer); timer = null;
     clearTimeout(dlgTimer); dlgTimer = null;
     clearTimeout(decTimer); decTimer = null;
-    clearTimeout(moveWatchTimer); moveWatchTimer = null;
     resetMovePlan();
     state = 'OFF'; log('stop');
     safe(updateBadge);
