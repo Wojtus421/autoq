@@ -1304,7 +1304,7 @@
     // żeby bot nie "zamierał" w oczekiwaniu na wykrycie bezczynności. W pozostałych stanach
     // (ARRIVED, itp.) zostaje dłuższy, bezpieczniejszy próg idleFallbackMs.
     const scanThreshold = state === 'NAV' ? CFG.navScanMs : CFG.idleFallbackMs;
-    if (now - lastActivity > scanThreshold) {
+    if (!moveHeldKey && now - lastActivity > scanThreshold) {
       lastTalkAt = now;
       tplCache = { at: 0, val: [] };
       knownNames.clear();
