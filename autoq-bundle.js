@@ -744,14 +744,14 @@
     return segs;
   }
 
-  let moveSegs = [], moveSegIdx = -1, moveHeldKey = null, movePlannedFor = '', moveLastPlanAt = 0;
+  let moveSegs = [], moveSegIdx = -1, moveHeldKey = null, plannedDest = null, moveLastPlanAt = 0;
 
   function releaseMoveKey() {
     if (moveHeldKey) { keyUpEvt(moveHeldKey); moveHeldKey = null; }
   }
   function resetMovePlan() {
     releaseMoveKey();
-    moveSegs = []; moveSegIdx = -1; movePlannedFor = '';
+    moveSegs = []; moveSegIdx = -1; plannedDest = null;
   }
 
   function nearestWalkable(destTile, g, maxR) {
@@ -774,7 +774,7 @@
   function planPath(destTile) {
     const hero = E().hero.d;
     const g = gridInfo();
-    if (!g) { log('A*: brak danych kolizji dla mapy — nie mogę policzyć trasy'); releaseMoveKey(); moveSegs = []; moveSegIdx = -1; movePlannedFor = destTile.x + ',' + destTile.y; moveLastPlanAt = Date.now(); return false; }
+    if (!g) { log('A*: brak danych kolizji dla mapy — nie mogę policzyć trasy'); releaseMoveKey(); moveSegs = []; moveSegIdx = -1; plannedDest = destTile; moveLastPlanAt = Date.now(); return false; }
     // Cel (np. obiekt na ścianie) może stać na nieprzechodnim polu — wtedy
     // podchodzimy do najbliższego wolnego pola w sąsiedztwie, a nie na sam cel.
     const goal = nearestWalkable(destTile, g, Math.max(3, CFG.talkRadius + 2)) || destTile;
@@ -782,7 +782,7 @@
     releaseMoveKey();
     moveSegs = pathToSegments(path);
     moveSegIdx = -1;
-    movePlannedFor = destTile.x + ',' + destTile.y;
+    plannedDest = destTile;
     moveLastPlanAt = Date.now();
     if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y, '(cel podejścia:', goal.x + ',' + goal.y + ')');
     else log('A*: trasa do', destTile.x + ',' + destTile.y, '(podejście:', goal.x + ',' + goal.y + ') —', moveSegs.length, 'segment(ów), start z', hero.x + ',' + hero.y);
@@ -791,8 +791,12 @@
 
   function driveMovement(destTile) {
     const now = Date.now();
-    const wantKey = destTile.x + ',' + destTile.y;
-    const stalePlan = wantKey !== movePlannedFor || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
+    // Drobne przesunięcia celu (np. NPC robi krok w ramach idle-wander) nie
+    // powinny wywoływać pełnego przeliczenia trasy — tylko realna zmiana
+    // celu (>1 pole) albo okresowy interwał bezpieczeństwa. Bez tego bot
+    // co chwilę szarpał się w inną stronę za każdym mikro-ruchem NPC-a.
+    const driftedFar = !plannedDest || chebyshev(destTile, plannedDest) > 1;
+    const stalePlan = driftedFar || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
     if (stalePlan && !planPath(destTile)) return;
     const hero = E().hero.d;
     if (moveHeldKey) {
