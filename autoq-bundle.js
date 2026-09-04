@@ -37,6 +37,11 @@
     collectExp: true,
     keyTalk: { key: 'q', code: 'KeyQ', keyCode: 81 },
     keyAttack: { key: 'e', code: 'KeyE', keyCode: 69 },
+    keyUp: { key: 'w', code: 'KeyW', keyCode: 87 },
+    keyDown: { key: 's', code: 'KeyS', keyCode: 83 },
+    keyLeft: { key: 'a', code: 'KeyA', keyCode: 65 },
+    keyRight: { key: 'd', code: 'KeyD', keyCode: 68 },
+    pathReplanMs: 4000, // okresowe przeliczenie trasy A* nawet bez utknięcia (dynamiczne przeszkody)
     itemFallbackEnabled: false,
     minSendGapMs: 250,
     maxSendPer10s: 18,
@@ -639,17 +644,159 @@
     return clickCanvas(x, y);
   }
 
+  // === Ruch WSAD + A* ===================================================
+  // Gra nie wspiera ruchu po skosie — tylko 4 kierunki (góra/dół/lewo/prawo),
+  // a ruch trzymanym klawiszem jest ciągły. Zamiast E().hero.autoGoTo(...)
+  // (wewnętrzny pathfinding silnika) liczymy własną trasę na siatce kolizji
+  // i sterujemy postacią wciskając/trzymając/puszczając WSAD.
+
+  function keyDownEvt(k) {
+    const init = { key: k.key, code: k.code, keyCode: k.keyCode, which: k.keyCode, bubbles: true, cancelable: true, view: W };
+    const targets = [document.activeElement, canvasEl(), document, W].filter(Boolean);
+    for (const el of targets) el.dispatchEvent(new KeyboardEvent('keydown', init));
+  }
+  function keyUpEvt(k) {
+    const init = { key: k.key, code: k.code, keyCode: k.keyCode, which: k.keyCode, bubbles: true, cancelable: true, view: W };
+    const targets = [document.activeElement, canvasEl(), document, W].filter(Boolean);
+    for (const el of targets) el.dispatchEvent(new KeyboardEvent('keyup', init));
+  }
+  function tapKey(k) { keyDownEvt(k); keyUpEvt(k); }
+  function keyForDir(dx, dy) {
+    if (dy < 0) return CFG.keyUp;
+    if (dy > 0) return CFG.keyDown;
+    if (dx < 0) return CFG.keyLeft;
+    if (dx > 0) return CFG.keyRight;
+    return null;
+  }
+
+  function gridInfo() {
+    const md = safe(() => E().map.d);
+    const col = safe(() => E().collision) || safe(() => E().map && E().map.col);
+    const w = md && +md.x, h = md && +md.y;
+    if (!col || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+    return { col, w, h };
+  }
+  function isWalkable(g, x, y) {
+    if (!g || x < 0 || y < 0 || x >= g.w || y >= g.h) return false;
+    const c = g.col[y * g.w + x] ?? g.col[x + ',' + y];
+    return !(c === 1 || c === true || c === '1');
+  }
+  function tileWalkableKnown(x, y) {
+    if (!isWalkable(gridInfo(), x, y)) return false;
+    if (npcList().map(npcInfo).filter(Boolean).some(n => n.x === x && n.y === y)) return false;
+    return true;
+  }
+
+  const ORTHO_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  function aStar(start, goal, g) {
+    if (!g) return null;
+    if (start.x === goal.x && start.y === goal.y) return [{ x: start.x, y: start.y }];
+    if (!isWalkable(g, goal.x, goal.y)) return null;
+    const h = p => Math.abs(p.x - goal.x) + Math.abs(p.y - goal.y);
+    const key = (x, y) => x + ',' + y;
+    const open = new Map();
+    const closed = new Set();
+    open.set(key(start.x, start.y), { x: start.x, y: start.y, g: 0, f: h(start), parent: null });
+    const MAX_NODES = 6000; // bezpiecznik dla dużych/nieosiągalnych map
+    let iterations = 0;
+    while (open.size) {
+      if (++iterations > MAX_NODES) return null;
+      let cur = null, curKey = null;
+      for (const [k, n] of open) { if (!cur || n.f < cur.f) { cur = n; curKey = k; } }
+      if (cur.x === goal.x && cur.y === goal.y) {
+        const path = [];
+        for (let n = cur; n; n = n.parent) path.unshift({ x: n.x, y: n.y });
+        return path;
+      }
+      open.delete(curKey);
+      closed.add(curKey);
+      for (const [dx, dy] of ORTHO_DIRS) {
+        const nx = cur.x + dx, ny = cur.y + dy, nk = key(nx, ny);
+        if (closed.has(nk) || !isWalkable(g, nx, ny)) continue;
+        const ng = cur.g + 1;
+        const existing = open.get(nk);
+        if (!existing || ng < existing.g) open.set(nk, { x: nx, y: ny, g: ng, f: ng + h({ x: nx, y: ny }), parent: cur });
+      }
+    }
+    return null;
+  }
+
+  function pathToSegments(path) {
+    if (!path || path.length < 2) return [];
+    const segs = [];
+    let curDx = null, curDy = null, segEnd = null;
+    for (let i = 1; i < path.length; i++) {
+      const dx = Math.sign(path[i].x - path[i - 1].x), dy = Math.sign(path[i].y - path[i - 1].y);
+      if (dx !== curDx || dy !== curDy) {
+        if (curDx !== null) segs.push({ dx: curDx, dy: curDy, end: segEnd });
+        curDx = dx; curDy = dy;
+      }
+      segEnd = path[i];
+    }
+    segs.push({ dx: curDx, dy: curDy, end: segEnd });
+    return segs;
+  }
+
+  let moveSegs = [], moveSegIdx = -1, moveHeldKey = null, movePlannedFor = '', moveLastPlanAt = 0;
+
+  function releaseMoveKey() {
+    if (moveHeldKey) { keyUpEvt(moveHeldKey); moveHeldKey = null; }
+  }
+  function resetMovePlan() {
+    releaseMoveKey();
+    moveSegs = []; moveSegIdx = -1; movePlannedFor = '';
+  }
+
+  function planPath(destTile) {
+    const hero = E().hero.d;
+    const path = aStar({ x: hero.x, y: hero.y }, destTile, gridInfo());
+    releaseMoveKey();
+    moveSegs = pathToSegments(path);
+    moveSegIdx = -1;
+    movePlannedFor = destTile.x + ',' + destTile.y;
+    moveLastPlanAt = Date.now();
+    if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y);
+    return !!path;
+  }
+
+  function driveMovement(destTile) {
+    const now = Date.now();
+    const wantKey = destTile.x + ',' + destTile.y;
+    const stalePlan = wantKey !== movePlannedFor || (now - moveLastPlanAt > CFG.pathReplanMs && !moveHeldKey);
+    if (stalePlan && !planPath(destTile)) return;
+    const hero = E().hero.d;
+    if (moveHeldKey) {
+      const seg = moveSegs[moveSegIdx];
+      if (seg && hero.x === seg.end.x && hero.y === seg.end.y) {
+        releaseMoveKey();
+        moveSegIdx++;
+      } else {
+        return; // wciąż w trakcie segmentu — trzymamy klawisz
+      }
+    } else if (moveSegIdx < 0) {
+      moveSegIdx = 0;
+    }
+    if (moveSegIdx >= moveSegs.length) return; // dojechaliśmy do celu trasy
+    const seg = moveSegs[moveSegIdx];
+    const k = keyForDir(seg.dx, seg.dy);
+    if (!k) { moveSegIdx++; return; }
+    keyDownEvt(k);
+    moveHeldKey = k;
+    lastClickAt = now;
+  }
+  // ========================================================================
+
   let nudgeDir = 0;
-  const NUDGE_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
   function nudgeStep(t) {
     const h = E().hero.d;
     const md = safe(() => E().map.d) || {};
     const known = [];
     const blind = [];
-    for (const [dx, dy] of NUDGE_DIRS) {
+    for (const [dx, dy] of ORTHO_DIRS) {
       const nx = h.x + dx, ny = h.y + dy;
       if (md.x && (nx < 0 || ny < 0 || nx >= md.x || ny >= md.y)) continue;
-      (tileWalkableKnown(nx, ny) ? known : blind).push({ x: nx, y: ny });
+      (tileWalkableKnown(nx, ny) ? known : blind).push({ x: nx, y: ny, dx, dy });
     }
     const pool = known.length ? known : blind;
     if (!pool.length) {
@@ -660,20 +807,8 @@
     const dest = pool[nudgeDir % pool.length];
     nudgeDir++;
     log('krok w bok na', dest.x + ',' + dest.y, known.length ? '(pewne)' : '(na ślepo)');
-    if (!safe(() => { E().hero.autoGoTo({ x: dest.x, y: dest.y }); return 1; })) {
-      safe(() => E().hero.autoGoTo(dest.x, dest.y));
-    }
-    return true;
-  }
-
-  function tileWalkableKnown(x, y) {
-    const md = safe(() => E().map.d);
-    const col = safe(() => E().collision) || safe(() => E().map && E().map.col);
-    const w = md && +md.x;
-    if (!col || !Number.isFinite(w)) return false;
-    const c = col[y * w + x] ?? col[x + ',' + y];
-    if (c === 1 || c === true || c === '1') return false;
-    if (npcList().map(npcInfo).filter(Boolean).some(n => n.x === x && n.y === y)) return false;
+    const k = keyForDir(dest.dx, dest.dy);
+    if (k) tapKey(k);
     return true;
   }
 
@@ -898,6 +1033,7 @@
 
   function onQuestChange() {
     log('zmiana aktywnego zadania — czyszczę cele i stan interakcji');
+    resetMovePlan();
     doneTargets.clear();
     knownNames.clear();
     talkCount.clear();
@@ -964,17 +1100,8 @@
   function navigateTo(t) {
     const dest = (t && t.npc && Number.isFinite(t.npc.x) && { x: t.npc.x, y: t.npc.y }) || (t && t.tile);
     if (!dest) return false;
-    const h = E().hero;
-    lastClickAt = Date.now();
-    nextNavGap = jit(CFG.clickIntervalMs);
-    if (typeof h.autoGoTo === 'function') {
-      try { h.autoGoTo({ x: dest.x, y: dest.y }); log('autoGoTo ->', dest.x + ',' + dest.y); return true; }
-      catch (e1) {
-        try { h.autoGoTo(dest.x, dest.y); log('autoGoTo(x,y) ->', dest.x + ',' + dest.y); return true; }
-        catch (e2) { log('autoGoTo błąd:', e2.message); }
-      }
-    }
-    return clickArrow(t);
+    driveMovement(dest);
+    return true;
   }
 
   function pressKey(key, code, keyCode) {
@@ -1204,6 +1331,7 @@
       const arriveDist = t.npc ? CFG.talkRadius : 1;
 
       if (settled && dist <= arriveDist) {
+        releaseMoveKey();
         state = 'ARRIVED'; talkTries = 0;
         log('-> ARRIVED, dystans', dist, t.npc ? '' : '(cel-kafelek)');
         setTimeout(talkToTarget, jit(CFG.talkDelayMs) + hesitation());
@@ -1222,6 +1350,7 @@
         lastPtrLogged = '';
         lastKey = '';
         lastClickAt = 0;
+        resetMovePlan();
         if (stuckRetries >= CFG.stuckGiveUpTries) {
           markDone(t, 'nieosiągalny po ' + stuckRetries + ' odświeżeniach');
           state = 'NAV'; talkTries = 0; stuckRetries = 0;
@@ -1229,7 +1358,7 @@
         return;
       }
 
-      if (!inRange && now - lastClickAt > nextNavGap) navigateTo(t);
+      if (!inRange) navigateTo(t); else releaseMoveKey();
       return;
     }
 
@@ -1288,6 +1417,7 @@
     clearTimeout(timer); timer = null;
     clearTimeout(dlgTimer); dlgTimer = null;
     clearTimeout(decTimer); decTimer = null;
+    resetMovePlan();
     state = 'OFF'; log('stop');
     safe(updateBadge);
   };
@@ -1296,6 +1426,10 @@
   const LS_KEY_EXP = 'mq_collect_exp';
   const LS_KEY_TALK = 'mq_key_talk';
   const LS_KEY_ATTACK = 'mq_key_attack';
+  const LS_KEY_UP = 'mq_key_up';
+  const LS_KEY_DOWN = 'mq_key_down';
+  const LS_KEY_LEFT = 'mq_key_left';
+  const LS_KEY_RIGHT = 'mq_key_right';
   const readEnabled = () => { try { return localStorage.getItem(LS_KEY) === '1'; } catch (e) { return false; } };
   const saveEnabled = v => { try { localStorage.setItem(LS_KEY, v ? '1' : '0'); } catch (e) {} };
   const readExpPref = () => { try { const v = localStorage.getItem(LS_KEY_EXP); return v === null ? true : v === '1'; } catch (e) { return true; } };
@@ -1308,6 +1442,10 @@
   CFG.collectExp = readExpPref();
   CFG.keyTalk = readKeybind(LS_KEY_TALK, CFG.keyTalk);
   CFG.keyAttack = readKeybind(LS_KEY_ATTACK, CFG.keyAttack);
+  CFG.keyUp = readKeybind(LS_KEY_UP, CFG.keyUp);
+  CFG.keyDown = readKeybind(LS_KEY_DOWN, CFG.keyDown);
+  CFG.keyLeft = readKeybind(LS_KEY_LEFT, CFG.keyLeft);
+  CFG.keyRight = readKeybind(LS_KEY_RIGHT, CFG.keyRight);
 
   let panel = null;
   function togglePanel() {
@@ -1379,6 +1517,10 @@
     }
     makeKeybindRow('Rozmowa / interakcja', 'keyTalk', LS_KEY_TALK);
     makeKeybindRow('Atak', 'keyAttack', LS_KEY_ATTACK);
+    makeKeybindRow('Ruch: góra', 'keyUp', LS_KEY_UP);
+    makeKeybindRow('Ruch: dół', 'keyDown', LS_KEY_DOWN);
+    makeKeybindRow('Ruch: lewo', 'keyLeft', LS_KEY_LEFT);
+    makeKeybindRow('Ruch: prawo', 'keyRight', LS_KEY_RIGHT);
 
     const hint = document.createElement('div');
     hint.textContent = 'Dotyczy okienek wyboru nagrody. Inne pytania: zawsze lewa opcja. ' +
