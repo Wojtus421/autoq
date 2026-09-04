@@ -748,15 +748,37 @@
     moveSegs = []; moveSegIdx = -1; movePlannedFor = '';
   }
 
+  function nearestWalkable(destTile, g, maxR) {
+    if (!g) return null;
+    if (isWalkable(g, destTile.x, destTile.y)) return destTile;
+    for (let r = 1; r <= maxR; r++) {
+      const cands = [];
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // tylko obwód pierścienia o promieniu r
+          const x = destTile.x + dx, y = destTile.y + dy;
+          if (isWalkable(g, x, y)) cands.push({ x, y, d: Math.abs(dx) + Math.abs(dy) });
+        }
+      }
+      if (cands.length) { cands.sort((a, b) => a.d - b.d); return cands[0]; }
+    }
+    return null;
+  }
+
   function planPath(destTile) {
     const hero = E().hero.d;
-    const path = aStar({ x: hero.x, y: hero.y }, destTile, gridInfo());
+    const g = gridInfo();
+    if (!g) { log('A*: brak danych kolizji dla mapy — nie mogę policzyć trasy'); releaseMoveKey(); moveSegs = []; moveSegIdx = -1; movePlannedFor = destTile.x + ',' + destTile.y; moveLastPlanAt = Date.now(); return false; }
+    // Cel (np. obiekt na ścianie) może stać na nieprzechodnim polu — wtedy
+    // podchodzimy do najbliższego wolnego pola w sąsiedztwie, a nie na sam cel.
+    const goal = nearestWalkable(destTile, g, Math.max(3, CFG.talkRadius + 2)) || destTile;
+    const path = aStar({ x: hero.x, y: hero.y }, goal, g);
     releaseMoveKey();
     moveSegs = pathToSegments(path);
     moveSegIdx = -1;
     movePlannedFor = destTile.x + ',' + destTile.y;
     moveLastPlanAt = Date.now();
-    if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y);
+    if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y, '(cel podejścia:', goal.x + ',' + goal.y + ')');
     return !!path;
   }
 
@@ -1348,12 +1370,11 @@
         tplCache = { at: 0, val: [] };
         knownNames.clear();
         lastPtrLogged = '';
-        lastKey = '';
         lastClickAt = 0;
         resetMovePlan();
         if (stuckRetries >= CFG.stuckGiveUpTries) {
           markDone(t, 'nieosiągalny po ' + stuckRetries + ' odświeżeniach');
-          state = 'NAV'; talkTries = 0; stuckRetries = 0;
+          state = 'NAV'; talkTries = 0; stuckRetries = 0; lastKey = '';
         }
         return;
       }
