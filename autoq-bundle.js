@@ -730,17 +730,16 @@
 
   function pathToSegments(path) {
     if (!path || path.length < 2) return [];
+    // CELOWO bez łączenia kolejnych pól w jeden długi "hold" — sprawdzamy
+    // pozycję tylko raz na tick (250ms), a przy dłuższym trzymaniu klawisza
+    // postać potrafi "uciec" wiele pól za koniec segmentu, zanim to
+    // zauważymy (overshoot). Jeden segment = jedno pole, więc maksymalny
+    // możliwy poślizg to jedno pole, nie kilkanaście.
     const segs = [];
-    let curDx = null, curDy = null, segEnd = null;
     for (let i = 1; i < path.length; i++) {
       const dx = Math.sign(path[i].x - path[i - 1].x), dy = Math.sign(path[i].y - path[i - 1].y);
-      if (dx !== curDx || dy !== curDy) {
-        if (curDx !== null) segs.push({ dx: curDx, dy: curDy, end: segEnd });
-        curDx = dx; curDy = dy;
-      }
-      segEnd = path[i];
+      segs.push({ dx, dy, end: path[i] });
     }
-    segs.push({ dx: curDx, dy: curDy, end: segEnd });
     return segs;
   }
 
