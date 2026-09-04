@@ -671,7 +671,7 @@
 
   function gridInfo() {
     const md = safe(() => E().map.d);
-    const col = safe(() => E().collision) || safe(() => E().map && E().map.col);
+    const col = safe(() => E().map && E().map.col) || safe(() => E().collision);
     const w = md && +md.x, h = md && +md.y;
     if (!col || !Number.isFinite(w) || !Number.isFinite(h)) return null;
     return { col, w, h };
@@ -785,6 +785,7 @@
     movePlannedFor = destTile.x + ',' + destTile.y;
     moveLastPlanAt = Date.now();
     if (!path) log('A*: brak trasy do', destTile.x + ',' + destTile.y, '(cel podejścia:', goal.x + ',' + goal.y + ')');
+    else log('A*: trasa do', destTile.x + ',' + destTile.y, '(podejście:', goal.x + ',' + goal.y + ') —', moveSegs.length, 'segment(ów), start z', hero.x + ',' + hero.y);
     return !!path;
   }
 
@@ -797,6 +798,7 @@
     if (moveHeldKey) {
       const seg = moveSegs[moveSegIdx];
       if (seg && hero.x === seg.end.x && hero.y === seg.end.y) {
+        log('segment ukończony, pozycja', hero.x + ',' + hero.y, '— puszczam', keyName(moveHeldKey));
         releaseMoveKey();
         moveSegIdx++;
       } else {
@@ -805,13 +807,15 @@
     } else if (moveSegIdx < 0) {
       moveSegIdx = 0;
     }
-    if (moveSegIdx >= moveSegs.length) return; // dojechaliśmy do celu trasy
+    if (moveSegIdx >= moveSegs.length) { log('trasa ukończona, pozycja', hero.x + ',' + hero.y); return; }
     const seg = moveSegs[moveSegIdx];
     const k = keyForDir(seg.dx, seg.dy);
     if (!k) { moveSegIdx++; return; }
     keyDownEvt(k);
     moveHeldKey = k;
     lastClickAt = now;
+    log('trzymam', keyName(k), 'z', hero.x + ',' + hero.y, 'do', seg.end.x + ',' + seg.end.y,
+        '(segment ' + (moveSegIdx + 1) + '/' + moveSegs.length + ')');
   }
   // ========================================================================
 
