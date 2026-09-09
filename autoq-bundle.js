@@ -1296,10 +1296,27 @@
   const LS_KEY_EXP = 'mq_collect_exp';
   const LS_KEY_TALK = 'mq_key_talk';
   const LS_KEY_ATTACK = 'mq_key_attack';
+  const LS_KEY_REST_ON = 'mq_rest_enabled';
+  const LS_KEY_REST_EVERY = 'mq_rest_every';
+  const LS_KEY_REST_FOR = 'mq_rest_for';
   const readEnabled = () => { try { return localStorage.getItem(LS_KEY) === '1'; } catch (e) { return false; } };
   const saveEnabled = v => { try { localStorage.setItem(LS_KEY, v ? '1' : '0'); } catch (e) {} };
   const readExpPref = () => { try { const v = localStorage.getItem(LS_KEY_EXP); return v === null ? true : v === '1'; } catch (e) { return true; } };
   const saveExpPref = v => { try { localStorage.setItem(LS_KEY_EXP, v ? '1' : '0'); } catch (e) {} };
+  const readBoolPref = (lsKey, def) => { try { const v = localStorage.getItem(lsKey); return v === null ? def : v === '1'; } catch (e) { return def; } };
+  const saveBoolPref = (lsKey, v) => { try { localStorage.setItem(lsKey, v ? '1' : '0'); } catch (e) {} };
+  const readRange = (lsKey, def) => {
+    try {
+      const v = localStorage.getItem(lsKey);
+      if (!v) return def;
+      const p = JSON.parse(v);
+      if (!Array.isArray(p) || p.length !== 2) return def;
+      const a = +p[0], b = +p[1];
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b < a) return def;
+      return [a, b];
+    } catch (e) { return def; }
+  };
+  const saveRange = (lsKey, range) => { try { localStorage.setItem(lsKey, JSON.stringify(range)); } catch (e) {} };
   const readKeybind = (lsKey, def) => {
     try { const v = localStorage.getItem(lsKey); if (!v) return def; const p = JSON.parse(v); return (p && p.key && p.code) ? p : def; }
     catch (e) { return def; }
@@ -1308,6 +1325,9 @@
   CFG.collectExp = readExpPref();
   CFG.keyTalk = readKeybind(LS_KEY_TALK, CFG.keyTalk);
   CFG.keyAttack = readKeybind(LS_KEY_ATTACK, CFG.keyAttack);
+  CFG.restEnabled = readBoolPref(LS_KEY_REST_ON, CFG.restEnabled);
+  CFG.restEveryMs = readRange(LS_KEY_REST_EVERY, CFG.restEveryMs);
+  CFG.restForMs = readRange(LS_KEY_REST_FOR, CFG.restForMs);
 
   let panel = null;
   function togglePanel() {
@@ -1317,7 +1337,7 @@
     panel = document.createElement('div');
     panel.style.cssText = 'position:fixed;top:26px;right:4px;z-index:2147483647;' +
       'font:11px monospace;padding:8px 10px;border-radius:4px;background:rgba(20,20,25,.95);' +
-      'color:#eee;box-shadow:0 2px 8px rgba(0,0,0,.5);min-width:190px;user-select:none;';
+      'color:#eee;box-shadow:0 2px 8px rgba(0,0,0,.5);min-width:240px;user-select:none;';
     panel.addEventListener('mousedown', e => e.stopPropagation());
     panel.addEventListener('click', e => e.stopPropagation());
 
@@ -1380,9 +1400,78 @@
     makeKeybindRow('Rozmowa / interakcja', 'keyTalk', LS_KEY_TALK);
     makeKeybindRow('Atak', 'keyAttack', LS_KEY_ATTACK);
 
+    const sep2 = document.createElement('div');
+    sep2.style.cssText = 'margin-top:8px;border-top:1px solid #444;padding-top:6px;';
+    panel.appendChild(sep2);
+
+    const restTitle = document.createElement('div');
+    restTitle.textContent = 'Przerwy (sleep timer)';
+    restTitle.style.cssText = 'font-weight:bold;color:#9cf;margin-bottom:4px;';
+    panel.appendChild(restTitle);
+
+    const restRow = document.createElement('label');
+    restRow.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;';
+    const restCb = document.createElement('input');
+    restCb.type = 'checkbox';
+    restCb.checked = CFG.restEnabled;
+    restCb.addEventListener('change', () => {
+      CFG.restEnabled = restCb.checked;
+      saveBoolPref(LS_KEY_REST_ON, restCb.checked);
+      if (restCb.checked) scheduleNextRest(); else restUntil = 0;
+      log('przerwy:', restCb.checked ? 'włączone' : 'wyłączone');
+      safe(updateBadge);
+    });
+    restRow.appendChild(restCb);
+    restRow.appendChild(document.createTextNode('Włącz przerwy'));
+    panel.appendChild(restRow);
+
+    // Przedziały trzymamy w ms, ale w UI pokazujemy wygodniejsze jednostki:
+    // "co ile" w minutach, "jak długo" w sekundach.
+    function makeRangeRow(label, cfgProp, lsKey, unitDivisor, unitLabel, step) {
+      const r = document.createElement('div');
+      r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:4px;margin-top:6px;';
+      const lab = document.createElement('span');
+      lab.textContent = label;
+      lab.style.cssText = 'flex:1;';
+      const mk = idx => {
+        const inp = document.createElement('input');
+        inp.type = 'number';
+        inp.min = '0';
+        inp.step = String(step);
+        inp.value = String(+(CFG[cfgProp][idx] / unitDivisor).toFixed(2));
+        inp.style.cssText = 'width:48px;background:#333;color:#fff;border:1px solid #555;' +
+          'border-radius:3px;padding:2px 4px;font:11px monospace;';
+        inp.addEventListener('change', () => {
+          const lo = parseFloat(inA.value), hi = parseFloat(inB.value);
+          if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 0 || hi < lo) {
+            // niepoprawny zakres — przywracamy poprzednie wartości
+            inA.value = String(+(CFG[cfgProp][0] / unitDivisor).toFixed(2));
+            inB.value = String(+(CFG[cfgProp][1] / unitDivisor).toFixed(2));
+            return;
+          }
+          CFG[cfgProp] = [lo * unitDivisor, hi * unitDivisor];
+          saveRange(lsKey, CFG[cfgProp]);
+          if (cfgProp === 'restEveryMs') scheduleNextRest();
+          log('zakres (' + label + '):', lo + '–' + hi + ' ' + unitLabel);
+        });
+        return inp;
+      };
+      const inA = mk(0), inB = mk(1);
+      const dash = document.createElement('span');
+      dash.textContent = '–';
+      const unit = document.createElement('span');
+      unit.textContent = unitLabel;
+      unit.style.cssText = 'color:#888;min-width:22px;';
+      r.appendChild(lab); r.appendChild(inA); r.appendChild(dash); r.appendChild(inB); r.appendChild(unit);
+      panel.appendChild(r);
+    }
+    makeRangeRow('Co ile', 'restEveryMs', LS_KEY_REST_EVERY, 60000, 'min', 1);
+    makeRangeRow('Jak długo', 'restForMs', LS_KEY_REST_FOR, 1000, 's', 5);
+
     const hint = document.createElement('div');
     hint.textContent = 'Dotyczy okienek wyboru nagrody. Inne pytania: zawsze lewa opcja. ' +
-      'Zmiana klawisza: kliknij przycisk i wciśnij nowy klawisz (Esc anuluje).';
+      'Zmiana klawisza: kliknij przycisk i wciśnij nowy klawisz (Esc anuluje). ' +
+      'Przerwy: losowa długość z podanego zakresu, w losowych odstępach z zakresu "co ile".';
     hint.style.cssText = 'margin-top:8px;color:#888;font-size:10px;line-height:1.3;';
     panel.appendChild(hint);
 
