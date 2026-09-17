@@ -668,7 +668,7 @@
     const pool = known.length ? known : blind;
     if (!pool.length) {
       log('krok w bok: brak sąsiednich pól w granicach mapy — próba interakcji');
-      if (!clickArrow(t)) pressQ();
+      if (!clickArrow(t)) pressQSafe(t);
       return false;
     }
     const dest = pool[nudgeDir % pool.length];
@@ -1026,6 +1026,28 @@
   }
   const keyName = b => (b && b.key && b.key.length === 1) ? b.key.toUpperCase() : ((b && (b.key || b.code)) || '?');
   const pressQ = () => { const k = CFG.keyTalk; pressKey(k.key, k.code, k.keyCode); log('wciśnięto ' + keyName(k) + ' (rozmowa/interakcja)'); return true; };
+  // Q zagaduje kogokolwiek w zasięgu, więc obok obcego NPC-a potrafi wziąć
+  // niepowiązanego questa i zmarnować czas. Dla celów-NPC mamy adresowane
+  // talk&id=, a Q zostaje tylko jako awaryjna interakcja z obiektem —
+  // i tylko wtedy, gdy w zasięgu nie stoi nikt poza naszym celem.
+  function foreignNpcNear(t) {
+    const h = safe(() => E().hero.d);
+    if (!h) return null;
+    const targetId = t && t.npc ? String(t.npc.id) : null;
+    return npcList().map(npcInfo).filter(Boolean)
+      .filter(n => Number.isFinite(n.x) && Number.isFinite(n.y))
+      .filter(n => chebyshev({ x: n.x, y: n.y }, { x: h.x, y: h.y }) <= CFG.talkRadius)
+      .find(n => String(n.id) !== targetId) || null;
+  }
+  function pressQSafe(t) {
+    const foreign = foreignNpcNear(t);
+    if (foreign) {
+      log('pomijam Q — w zasięgu obcy NPC', foreign.name || foreign.id,
+          '(Q zagadałoby jego, nie cel)');
+      return false;
+    }
+    return pressQ();
+  }
   const pressE = () => { const k = CFG.keyAttack; pressKey(k.key, k.code, k.keyCode); log('wciśnięto ' + keyName(k) + ' (atak)'); return true; };
   const pressEsc = () => { pressKey('Escape', 'Escape', 27); log('wciśnięto Esc'); return true; };
 
@@ -1044,8 +1066,7 @@
 
     if (!t.npc) {
       if (clickArrow(t)) { log('interakcja z obiektem:', (t.tile && t.tile.name) || t.key, '| dystans', dist); return true; }
-      pressQ();
-      return true;
+      return pressQSafe(t);
     }
 
     const d0 = (t.npc.obj && t.npc.obj.d && typeof t.npc.obj.d === 'object') ? t.npc.obj.d : {};
@@ -1207,7 +1228,7 @@
           log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
         } else if (!npc) {
           log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
-          pressQ();
+          pressQSafe(t);
         }
         return;
       }
@@ -1294,7 +1315,7 @@
       if (!t.npc) {
         talkTries++;
         if (talkTries === 1 && clickArrow(t)) { log('interakcja: klik w strzałkę na obiekcie', t.tile); return; }
-        if (talkTries === 2) { log('cel bez NPC — próba Q'); pressQ(); return; }
+        if (talkTries === 2) { log('cel bez NPC — próba Q'); pressQSafe(t); return; }
         if (talkTries >= 4) {
           markDone(t, 'cel bez NPC — nic tu do zrobienia');
           state = 'NAV'; talkTries = 0; lastKey = ''; moved = false;
