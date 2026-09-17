@@ -232,6 +232,19 @@
     }
     return [];
   }
+  // Wejścia/przejścia (bramki) nie są interakcją — trzeba na nie WEJŚĆ.
+  // Silnik wystawia je przez Engine.map.gateways; sprawdzamy oba warianty
+  // API, bo getOpenGtwAtPosition zwraca tylko otwarte/dostępne bramki.
+  function gatewayAt(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return safe(() => {
+      const gw = E() && E().map && E().map.gateways;
+      if (!gw) return null;
+      return (gw.getOpenGtwAtPosition && gw.getOpenGtwAtPosition(x, y)) ||
+             (gw.getGtwAtPosition && gw.getGtwAtPosition(x, y)) || null;
+    });
+  }
+
   const doneTargets = new Map();
 
   function buildTarget(arrow) {
@@ -1191,8 +1204,10 @@
     if (state === 'NAV') {
       const dist = distanceToTarget(t);
       const settled = now - lastMoveAt > CFG.arrivalStableMs;
+      // Bramka/wejście: celem jest STANIĘCIE na polu, nie interakcja obok.
+      const isGate = !t.npc && t.tile && !!gatewayAt(t.tile.x, t.tile.y);
 
-      if (!t.npc && dist === 0) {
+      if (!t.npc && !isGate && dist === 0) {
         const kqNames = killQuestNames();
         const isGhostKill = (huntName && nameMatches(t.tile && t.tile.name, huntName)) ||
                              kqNames.some(k => nameMatches(k, t.tile && t.tile.name));
@@ -1217,11 +1232,13 @@
       nudgeGiveUpCount = 0;
 
       const stopDist = t.npc ? CFG.talkRadius : 0;
-      const arriveDist = t.npc ? CFG.talkRadius : 1;
+      // Przy bramce "obok" nie wystarczy — dopóki nie stoimy na polu,
+      // nawigacja ma iść dalej, a nie przechodzić w ARRIVED i klikać.
+      const arriveDist = t.npc ? CFG.talkRadius : (isGate ? 0 : 1);
 
       if (settled && dist <= arriveDist) {
         state = 'ARRIVED'; talkTries = 0;
-        log('-> ARRIVED, dystans', dist, t.npc ? '' : '(cel-kafelek)');
+        log('-> ARRIVED, dystans', dist, t.npc ? '' : (isGate ? '(bramka)' : '(cel-kafelek)'));
         setTimeout(talkToTarget, jit(CFG.talkDelayMs) + hesitation());
         return;
       }
