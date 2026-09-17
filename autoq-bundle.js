@@ -33,6 +33,9 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
+    qSkipMaxStreak: 3, // ile razy z rzędu wolno pominąć Q z powodu obcego NPC, zanim i tak spróbujemy
+    itemMaxTries: 4, // ile razy próbować użyć/założyć ten sam przedmiot, zanim odpuścimy
+    shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
     decisionPollMs: 300,
     collectExp: true,
     keyTalk: { key: 'q', code: 'KeyQ', keyCode: 81 },
@@ -232,6 +235,19 @@
     }
     return [];
   }
+  // Wejścia/przejścia (bramki) nie są interakcją — trzeba na nie WEJŚĆ.
+  // Silnik wystawia je przez Engine.map.gateways; sprawdzamy oba warianty
+  // API, bo getOpenGtwAtPosition zwraca tylko otwarte/dostępne bramki.
+  function gatewayAt(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return safe(() => {
+      const gw = E() && E().map && E().map.gateways;
+      if (!gw) return null;
+      return (gw.getOpenGtwAtPosition && gw.getOpenGtwAtPosition(x, y)) ||
+             (gw.getGtwAtPosition && gw.getGtwAtPosition(x, y)) || null;
+    });
+  }
+
   const doneTargets = new Map();
 
   function buildTarget(arrow) {
@@ -509,7 +525,7 @@
       const i = options.findIndex(o => hasBit(o.code, bit));
       if (i >= 0) return { idx: i, why: CLASS_BY_BIT[bit] + ' (code ' + options[i].code + ')' };
     }
-    if (shopStageNames().length) {
+    if (missingShopNames().length) {
       const sh = options.findIndex(o => hasBit(o.code, BITS.SHOP));
       if (sh >= 0) { shopOpenedByBot = true; return { idx: sh, why: 'sklep (etap wymaga zakupu)' }; }
     }
@@ -583,7 +599,7 @@
 
     const clsOf = el => (el.className || '') + ' ' + [...el.querySelectorAll('[class*="line_"]')].map(c => c.className).join(' ');
     let idx = lines.findIndex(el => /line_(cont|new)_quest/.test(clsOf(el)));
-    if (idx < 0 && shopStageNames().length) {
+    if (idx < 0 && missingShopNames().length) {
       idx = lines.findIndex(el => /line_shop/.test(clsOf(el)));
       if (idx >= 0) shopOpenedByBot = true;
     }
@@ -654,7 +670,7 @@
     const pool = known.length ? known : blind;
     if (!pool.length) {
       log('krok w bok: brak sąsiednich pól w granicach mapy — próba interakcji');
-      if (!clickArrow(t)) pressQ();
+      if (!clickArrow(t)) pressQSafe(t);
       return false;
     }
     const dest = pool[nudgeDir % pool.length];
@@ -811,7 +827,11 @@
       .replace(/\s+(i|oraz|a następnie|potem|,|;|Filtruj|poziom|Obserwowane|Profesja)\b.*$/i, '')
       .replace(/[.!?].*$/, '')
       .trim();
-    const verbRe = /(?:kup przedmiot|kup|zakup)\s*:\s*([^\n.!?:]{1,60})/gi;
+    // "Zdobądź przedmiot: X" to najczęstszy wariant dla rzeczy, które po
+    // prostu kupuje się u kupca — bez tego lista zakupów wychodziła pusta
+    // i bot stał w sklepie nic nie robiąc. Wersje bez polskich znaków na
+    // wypadek innego zapisu w panelu.
+    const verbRe = /(?:kup przedmiot|kup|zakup|zdobądź przedmiot|zdobadz przedmiot|zdobądź|zdobadz)\s*:\s*([^\n.!?:]{1,60})/gi;
     const found = [];
     const seen = new Set();
     for (const t of texts) {
@@ -851,16 +871,35 @@
         || null;
   }
 
-  let shopRotateIdx = 0;
+  // Etap questa dalej wymienia przedmiot także wtedy, gdy już go mamy
+  // (nazwa znika dopiero po oddaniu/użyciu). Bez sprawdzenia plecaka bot
+  // kupował ten sam przedmiot w kółko i nie wychodził ze sklepu.
+  function missingShopNames() {
+    return shopStageNames().filter(n => !findItemByName(n));
+  }
+  // "Zdobądź przedmiot" obejmuje też rzeczy niekupowalne (dropy z mobów).
+  // Do kupowania i do decyzji o zamknięciu sklepu liczy się tylko to, co
+  // faktycznie jest w katalogu — inaczej bot tkwiłby w sklepie czekając
+  // na przedmiot, którego kupiec nigdy nie sprzeda.
+  function buyableMissingNames() {
+    return missingShopNames().filter(n => findShopItemByName(n));
+  }
+
+  let shopRotateIdx = 0, shopBuyCount = 0;
   function buyQuestItems() {
-    const names = shopStageNames();
+    const names = buyableMissingNames();
     if (!names.length) return false;
+    if (shopBuyCount >= CFG.shopMaxBuys) {
+      log('sklep: limit ' + CFG.shopMaxBuys + ' zakupów na wizytę osiągnięty — nie kupuję dalej');
+      return false;
+    }
     for (let i = 0; i < names.length; i++) {
       const idx = (shopRotateIdx + i) % names.length;
       const name = names[idx];
       const it = findShopItemByName(name);
       if (!it) { log('przedmiotu "' + name + '" nie ma (jeszcze) w katalogu sklepu'); continue; }
       if (!gSend('shop&buy=' + it.slot + ',1&sell=')) continue;
+      shopBuyCount++;
       log('kupno:', it.name, '(slot ' + it.slot + ', id ' + it.id + ')',
           '(' + (i + 1) + '/' + names.length + ' w etapie)');
       shopRotateIdx = (idx + 1) % names.length;
@@ -871,6 +910,12 @@
   function isShopOpen() { return shopItems().length > 0; }
 
   let itemRotateIdx = 0;
+  const itemTries = new Map();
+  // Zakładanie to moveitem&st=1, więc przedmiot już założony ma st=1
+  // i komenda staje się bezczynna. Etap questa nadal wymienia jego nazwę,
+  // więc bez tej kontroli bot zakładał go w nieskończoność.
+  const isEquipped = it => it && String(it.st) === '1';
+
   function useQuestItem() {
     const names = itemNamesFromQuest();
     if (!names.length) { log('nie znalazłem nazwy przedmiotu w etapie questa'); return false; }
@@ -880,9 +925,18 @@
       const name = names[idx];
       const it = findItemByName(name);
       if (!it) { log('przedmiotu "' + name + '" nie ma w plecaku'); continue; }
+      if (isEquipped(it)) { log('przedmiot "' + it.name + '" jest już założony — pomijam'); continue; }
+      // Bezpiecznik na wypadek przedmiotów, których stanu nie da się
+      // odczytać (st puste) — bez limitu byłaby to pętla bez końca.
+      const tries = (itemTries.get(it.id) || 0) + 1;
+      if (tries > CFG.itemMaxTries) {
+        log('przedmiot "' + it.name + '" — ' + CFG.itemMaxTries + ' prób bez efektu, odpuszczam');
+        continue;
+      }
+      itemTries.set(it.id, tries);
       if (!gSend('moveitem&st=1&id=' + it.id)) continue;
       log('użycie/założenie przedmiotu:', it.name, '(id ' + it.id + ')',
-          '(' + (i + 1) + '/' + names.length + ' w etapie)');
+          '(' + (i + 1) + '/' + names.length + ' w etapie, próba ' + tries + ')');
       itemRotateIdx = (idx + 1) % names.length;
       return true;
     }
@@ -912,6 +966,7 @@
     talkTries = 0;
     moved = false;
     shopOpenedByBot = false;
+    itemTries.clear();
     dialogueLoopTracker.clear();
   }
 
@@ -961,9 +1016,59 @@
     return all.map(el => ({ el, klasy: el.className, przyciski: decisionButtons(el).map(b => b.text) }));
   }
 
+  function tileFree(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    // col.check(x,y) === 0 oznacza pole wolne; wartości niezerowe to
+    // kolizja albo pole poza mapą.
+    return safe(() => E().map && E().map.col && E().map.col.check(x, y)) === 0;
+  }
+
+  // NPC stojący tuż przy przejściu: silnik sam dobiera pole, na którym
+  // zatrzyma postać, i potrafi wybrać właśnie to z przejściem — postać
+  // wchodzi wtedy na inną mapę i gubi cel. Dlatego przy takim NPC-u
+  // wskazujemy konkretne pole podejścia, z pominięciem przejść.
+  function approachTile(npc) {
+    const h = safe(() => E().hero.d);
+    if (!h) return null;
+    const r = CFG.talkRadius;
+    const cands = [];
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (!dx && !dy) continue;
+        const x = npc.x + dx, y = npc.y + dy;
+        if (!tileFree(x, y)) continue;
+        if (gatewayAt(x, y)) continue;
+        cands.push({ x, y, d: chebyshev({ x, y }, { x: h.x, y: h.y }) });
+      }
+    }
+    cands.sort((a, b) => a.d - b.d);
+    return cands[0] || null;
+  }
+
+  // Czy wokół NPC-a w ogóle jest przejście, którego trzeba unikać?
+  function gatewayNear(npc, r) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (gatewayAt(npc.x + dx, npc.y + dy)) return true;
+      }
+    }
+    return false;
+  }
+
   function navigateTo(t) {
-    const dest = (t && t.npc && Number.isFinite(t.npc.x) && { x: t.npc.x, y: t.npc.y }) || (t && t.tile);
+    let dest = (t && t.npc && Number.isFinite(t.npc.x) && { x: t.npc.x, y: t.npc.y }) || (t && t.tile);
     if (!dest) return false;
+    // Tylko gdy w pobliżu celu faktycznie jest przejście — w innych
+    // przypadkach zostawiamy dotychczasowe zachowanie bez zmian.
+    if (t && t.npc && Number.isFinite(t.npc.x) && gatewayNear(t.npc, CFG.talkRadius + 1)) {
+      const safeTile = approachTile(t.npc);
+      if (safeTile) {
+        dest = safeTile;
+        log('cel przy przejściu — podchodzę na bezpieczne pole', safeTile.x + ',' + safeTile.y);
+      } else {
+        log('cel przy przejściu, ale nie znalazłem bezpiecznego pola podejścia');
+      }
+    }
     const h = E().hero;
     lastClickAt = Date.now();
     nextNavGap = jit(CFG.clickIntervalMs);
@@ -989,6 +1094,39 @@
   }
   const keyName = b => (b && b.key && b.key.length === 1) ? b.key.toUpperCase() : ((b && (b.key || b.code)) || '?');
   const pressQ = () => { const k = CFG.keyTalk; pressKey(k.key, k.code, k.keyCode); log('wciśnięto ' + keyName(k) + ' (rozmowa/interakcja)'); return true; };
+  // Q zagaduje kogokolwiek w zasięgu, więc obok obcego NPC-a potrafi wziąć
+  // niepowiązanego questa i zmarnować czas. Dla celów-NPC mamy adresowane
+  // talk&id=, a Q zostaje tylko jako awaryjna interakcja z obiektem —
+  // i tylko wtedy, gdy w zasięgu nie stoi nikt poza naszym celem.
+  function foreignNpcNear(t) {
+    const h = safe(() => E().hero.d);
+    if (!h) return null;
+    const targetId = t && t.npc ? String(t.npc.id) : null;
+    return npcList().map(npcInfo).filter(Boolean)
+      .filter(n => Number.isFinite(n.x) && Number.isFinite(n.y))
+      .filter(n => chebyshev({ x: n.x, y: n.y }, { x: h.x, y: h.y }) <= CFG.talkRadius)
+      .find(n => String(n.id) !== targetId) || null;
+  }
+  let qSkipStreak = 0;
+  function pressQSafe(t) {
+    const foreign = foreignNpcNear(t);
+    if (!foreign) { qSkipStreak = 0; return pressQ(); }
+    // Blokada Q chroni przed zagadaniem przypadkowego NPC-a, ale bez
+    // zaworu bezpieczeństwa potrafi zakleszczyć bota: przy braku celu
+    // KAŻDY NPC jest "obcy", a obiekty questowe (piec, kowadło) same
+    // bywają NPC-ami. Po kilku pominięciach przepuszczamy Q, bo stanie
+    // w miejscu jest gorsze niż ryzyko niepotrzebnej rozmowy.
+    if (qSkipStreak < CFG.qSkipMaxStreak) {
+      qSkipStreak++;
+      log('pomijam Q — w zasięgu obcy NPC', foreign.name || foreign.id,
+          '(' + qSkipStreak + '/' + CFG.qSkipMaxStreak + ')');
+      return false;
+    }
+    log('Q mimo obcego NPC w zasięgu — ' + CFG.qSkipMaxStreak +
+        ' pominięć z rzędu, nie stoję bezczynnie');
+    qSkipStreak = 0;
+    return pressQ();
+  }
   const pressE = () => { const k = CFG.keyAttack; pressKey(k.key, k.code, k.keyCode); log('wciśnięto ' + keyName(k) + ' (atak)'); return true; };
   const pressEsc = () => { pressKey('Escape', 'Escape', 27); log('wciśnięto Esc'); return true; };
 
@@ -1007,8 +1145,7 @@
 
     if (!t.npc) {
       if (clickArrow(t)) { log('interakcja z obiektem:', (t.tile && t.tile.name) || t.key, '| dystans', dist); return true; }
-      pressQ();
-      return true;
+      return pressQSafe(t);
     }
 
     const d0 = (t.npc.obj && t.npc.obj.d && typeof t.npc.obj.d === 'object') ? t.npc.obj.d : {};
@@ -1016,6 +1153,19 @@
 
     const rec = talkCount.get(t.key) || { n: 0, mode: looksMob ? 'attack' : 'talk', switched: false };
     rec.n++;
+
+    // Obiekty questowe (piec, kowadło...) są w silniku NPC-ami z lvl 0.
+    // Przełączanie ich na atak niczego nie da — tylko zużywa próby.
+    const attackPointless = rec.mode === 'talk' && !looksMob &&
+                            (d0.lvl === undefined || +d0.lvl === 0);
+
+    if (rec.n > CFG.sameTargetMaxTalks && !rec.switched && attackPointless) {
+      log('cel', t.npc.name || t.npc.id, '— obiekt (lvl 0), atak nie ma sensu, skreślam');
+      markDone(t, 'obiekt nie reaguje na rozmowę');
+      talkCount.delete(t.key);
+      state = 'NAV'; talkTries = 0; lastKey = '';
+      return false;
+    }
 
     if (rec.n > CFG.sameTargetMaxTalks && !rec.switched) {
       rec.mode = rec.mode === 'attack' ? 'talk' : 'attack';
@@ -1100,14 +1250,14 @@
       if (buyQuestItems()) { lastTalkAt = now; return; }
     }
 
-    if (shopOpenedByBot && isShopOpen() && !shopStageNames().length) {
+    if (shopOpenedByBot && isShopOpen() && !buyableMissingNames().length) {
       log('sklep: zakupy questowe zakończone — zamykam (Esc)');
       pressEsc();
       shopOpenedByBot = false;
       lastTalkAt = now;
       return;
     }
-    if (!isShopOpen()) shopOpenedByBot = false;
+    if (!isShopOpen()) { shopOpenedByBot = false; shopBuyCount = 0; }
 
     if (!currentTarget() && isAreaSearchQuest() && now - lastMoveAt > CFG.arrivalStableMs) {
       if (now - lastNudgeAt > CFG.nudgeCooldownMs) {
@@ -1146,18 +1296,34 @@
     // (ARRIVED, itp.) zostaje dłuższy, bezpieczniejszy próg idleFallbackMs.
     const scanThreshold = state === 'NAV' ? CFG.navScanMs : CFG.idleFallbackMs;
     if (now - lastActivity > scanThreshold) {
-      lastTalkAt = now;
       tplCache = { at: 0, val: [] };
       knownNames.clear();
       lastPtrLogged = '';
-      const npc = (t && t.npc) || npcInfo(safe(() => E().questTracking.getNearTrackingNpc()));
-      if (npc && gSend('talk&id=' + npc.id)) {
-        log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
-      } else if (!npc) {
-        log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
-        pressQ();
+      // Cel-kafelek (przejście, miejsce na mapie) nie jest rozmową. Wcześniej
+      // skan spadał tu do getNearTrackingNpc() i wymuszał talk z pierwszym
+      // lepszym NPC-em stojącym obok przejścia — a że gałąź kończyła się
+      // return-em, nawigacja do samego przejścia nigdy nie ruszała. Efekt:
+      // nieskończona pętla gadania z przypadkową postacią.
+      const tileOnly = t && t.tile && !t.npc;
+      if (tileOnly) {
+        lastTalkAt = now; // trzymaj skan w rytmie navScanMs, nie co tick
+        lastClickAt = 0;  // odblokuj nawigację od razu
+        log('skan (' + (scanThreshold / 1000) + 's) — cel to kafelek ' +
+            t.tile.x + ',' + t.tile.y + ', odświeżam i idę dalej');
+      } else {
+        lastTalkAt = now;
+        const cand = (t && t.npc) || npcInfo(safe(() => E().questTracking.getNearTrackingNpc()));
+        // getNearTrackingNpc() nie zna doneTargets — bez tego bot wracał
+        // do rozmowy z NPC-em już odhaczonym jako załatwiony.
+        const npc = cand && !doneTargets.has('npc:' + cand.id) ? cand : null;
+        if (npc && gSend('talk&id=' + npc.id)) {
+          log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
+        } else if (!npc) {
+          log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
+          pressQSafe(t);
+        }
+        return;
       }
-      return;
     }
 
     if (!t) return;
@@ -1175,8 +1341,10 @@
     if (state === 'NAV') {
       const dist = distanceToTarget(t);
       const settled = now - lastMoveAt > CFG.arrivalStableMs;
+      // Bramka/wejście: celem jest STANIĘCIE na polu, nie interakcja obok.
+      const isGate = !t.npc && t.tile && !!gatewayAt(t.tile.x, t.tile.y);
 
-      if (!t.npc && dist === 0) {
+      if (!t.npc && !isGate && dist === 0) {
         const kqNames = killQuestNames();
         const isGhostKill = (huntName && nameMatches(t.tile && t.tile.name, huntName)) ||
                              kqNames.some(k => nameMatches(k, t.tile && t.tile.name));
@@ -1201,11 +1369,13 @@
       nudgeGiveUpCount = 0;
 
       const stopDist = t.npc ? CFG.talkRadius : 0;
-      const arriveDist = t.npc ? CFG.talkRadius : 1;
+      // Przy bramce "obok" nie wystarczy — dopóki nie stoimy na polu,
+      // nawigacja ma iść dalej, a nie przechodzić w ARRIVED i klikać.
+      const arriveDist = t.npc ? CFG.talkRadius : (isGate ? 0 : 1);
 
       if (settled && dist <= arriveDist) {
         state = 'ARRIVED'; talkTries = 0;
-        log('-> ARRIVED, dystans', dist, t.npc ? '' : '(cel-kafelek)');
+        log('-> ARRIVED, dystans', dist, t.npc ? '' : (isGate ? '(bramka)' : '(cel-kafelek)'));
         setTimeout(talkToTarget, jit(CFG.talkDelayMs) + hesitation());
         return;
       }
@@ -1237,7 +1407,7 @@
       if (!t.npc) {
         talkTries++;
         if (talkTries === 1 && clickArrow(t)) { log('interakcja: klik w strzałkę na obiekcie', t.tile); return; }
-        if (talkTries === 2) { log('cel bez NPC — próba Q'); pressQ(); return; }
+        if (talkTries === 2) { log('cel bez NPC — próba Q'); pressQSafe(t); return; }
         if (talkTries >= 4) {
           markDone(t, 'cel bez NPC — nic tu do zrobienia');
           state = 'NAV'; talkTries = 0; lastKey = ''; moved = false;
@@ -1523,7 +1693,7 @@
     isTrackedNpc, trackedTpls, npcList, npcInfo, gSend,
     pointerPositions, noteArrowNames, bagItems, itemInfo, findItemByName, itemNameFromQuest, itemNamesFromQuest, useQuestItem, isAreaSearchQuest, killQuestNames, keyName,
     loopBreakPick, dialogueLoopStatus: () => [...dialogueLoopTracker.entries()],
-    shopStageNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
+    shopStageNames, missingShopNames, buyableMissingNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
     decisionTick, decisionDebug, findDecisionBox, togglePanel,
     restNow: (sec) => { restUntil = Date.now() + (sec || 60) * 1000; safe(updateBadge); log('wymuszona przerwa', (sec || 60) + 's'); },
     restStatus: () => ({ odpoczywa: Date.now() < restUntil, doKoncaS: Math.max(0, Math.round((restUntil - Date.now()) / 1000)), nastepnaZaS: Math.max(0, Math.round((nextRestAt - Date.now()) / 1000)) }),
