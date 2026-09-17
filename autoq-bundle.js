@@ -33,7 +33,7 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
-    shopMaxBuys: 8, // twardy limit zakupów na jedną wizytę w sklepie — bezpiecznik przed pętlą kupowania
+    shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
     decisionPollMs: 300,
     collectExp: true,
     keyTalk: { key: 'q', code: 'KeyQ', keyCode: 81 },
@@ -825,7 +825,11 @@
       .replace(/\s+(i|oraz|a następnie|potem|,|;|Filtruj|poziom|Obserwowane|Profesja)\b.*$/i, '')
       .replace(/[.!?].*$/, '')
       .trim();
-    const verbRe = /(?:kup przedmiot|kup|zakup)\s*:\s*([^\n.!?:]{1,60})/gi;
+    // "Zdobądź przedmiot: X" to najczęstszy wariant dla rzeczy, które po
+    // prostu kupuje się u kupca — bez tego lista zakupów wychodziła pusta
+    // i bot stał w sklepie nic nie robiąc. Wersje bez polskich znaków na
+    // wypadek innego zapisu w panelu.
+    const verbRe = /(?:kup przedmiot|kup|zakup|zdobądź przedmiot|zdobadz przedmiot|zdobądź|zdobadz)\s*:\s*([^\n.!?:]{1,60})/gi;
     const found = [];
     const seen = new Set();
     for (const t of texts) {
@@ -871,10 +875,17 @@
   function missingShopNames() {
     return shopStageNames().filter(n => !findItemByName(n));
   }
+  // "Zdobądź przedmiot" obejmuje też rzeczy niekupowalne (dropy z mobów).
+  // Do kupowania i do decyzji o zamknięciu sklepu liczy się tylko to, co
+  // faktycznie jest w katalogu — inaczej bot tkwiłby w sklepie czekając
+  // na przedmiot, którego kupiec nigdy nie sprzeda.
+  function buyableMissingNames() {
+    return missingShopNames().filter(n => findShopItemByName(n));
+  }
 
   let shopRotateIdx = 0, shopBuyCount = 0;
   function buyQuestItems() {
-    const names = missingShopNames();
+    const names = buyableMissingNames();
     if (!names.length) return false;
     if (shopBuyCount >= CFG.shopMaxBuys) {
       log('sklep: limit ' + CFG.shopMaxBuys + ' zakupów na wizytę osiągnięty — nie kupuję dalej');
@@ -1126,7 +1137,7 @@
       if (buyQuestItems()) { lastTalkAt = now; return; }
     }
 
-    if (shopOpenedByBot && isShopOpen() && !missingShopNames().length) {
+    if (shopOpenedByBot && isShopOpen() && !buyableMissingNames().length) {
       log('sklep: zakupy questowe zakończone — zamykam (Esc)');
       pressEsc();
       shopOpenedByBot = false;
@@ -1569,7 +1580,7 @@
     isTrackedNpc, trackedTpls, npcList, npcInfo, gSend,
     pointerPositions, noteArrowNames, bagItems, itemInfo, findItemByName, itemNameFromQuest, itemNamesFromQuest, useQuestItem, isAreaSearchQuest, killQuestNames, keyName,
     loopBreakPick, dialogueLoopStatus: () => [...dialogueLoopTracker.entries()],
-    shopStageNames, missingShopNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
+    shopStageNames, missingShopNames, buyableMissingNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
     decisionTick, decisionDebug, findDecisionBox, togglePanel,
     restNow: (sec) => { restUntil = Date.now() + (sec || 60) * 1000; safe(updateBadge); log('wymuszona przerwa', (sec || 60) + 's'); },
     restStatus: () => ({ odpoczywa: Date.now() < restUntil, doKoncaS: Math.max(0, Math.round((restUntil - Date.now()) / 1000)), nastepnaZaS: Math.max(0, Math.round((nextRestAt - Date.now()) / 1000)) }),
