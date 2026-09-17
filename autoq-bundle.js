@@ -1015,9 +1015,59 @@
     return all.map(el => ({ el, klasy: el.className, przyciski: decisionButtons(el).map(b => b.text) }));
   }
 
+  function tileFree(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    // col.check(x,y) === 0 oznacza pole wolne; wartości niezerowe to
+    // kolizja albo pole poza mapą.
+    return safe(() => E().map && E().map.col && E().map.col.check(x, y)) === 0;
+  }
+
+  // NPC stojący tuż przy przejściu: silnik sam dobiera pole, na którym
+  // zatrzyma postać, i potrafi wybrać właśnie to z przejściem — postać
+  // wchodzi wtedy na inną mapę i gubi cel. Dlatego przy takim NPC-u
+  // wskazujemy konkretne pole podejścia, z pominięciem przejść.
+  function approachTile(npc) {
+    const h = safe(() => E().hero.d);
+    if (!h) return null;
+    const r = CFG.talkRadius;
+    const cands = [];
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (!dx && !dy) continue;
+        const x = npc.x + dx, y = npc.y + dy;
+        if (!tileFree(x, y)) continue;
+        if (gatewayAt(x, y)) continue;
+        cands.push({ x, y, d: chebyshev({ x, y }, { x: h.x, y: h.y }) });
+      }
+    }
+    cands.sort((a, b) => a.d - b.d);
+    return cands[0] || null;
+  }
+
+  // Czy wokół NPC-a w ogóle jest przejście, którego trzeba unikać?
+  function gatewayNear(npc, r) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (gatewayAt(npc.x + dx, npc.y + dy)) return true;
+      }
+    }
+    return false;
+  }
+
   function navigateTo(t) {
-    const dest = (t && t.npc && Number.isFinite(t.npc.x) && { x: t.npc.x, y: t.npc.y }) || (t && t.tile);
+    let dest = (t && t.npc && Number.isFinite(t.npc.x) && { x: t.npc.x, y: t.npc.y }) || (t && t.tile);
     if (!dest) return false;
+    // Tylko gdy w pobliżu celu faktycznie jest przejście — w innych
+    // przypadkach zostawiamy dotychczasowe zachowanie bez zmian.
+    if (t && t.npc && Number.isFinite(t.npc.x) && gatewayNear(t.npc, CFG.talkRadius + 1)) {
+      const safeTile = approachTile(t.npc);
+      if (safeTile) {
+        dest = safeTile;
+        log('cel przy przejściu — podchodzę na bezpieczne pole', safeTile.x + ',' + safeTile.y);
+      } else {
+        log('cel przy przejściu, ale nie znalazłem bezpiecznego pola podejścia');
+      }
+    }
     const h = E().hero;
     lastClickAt = Date.now();
     nextNavGap = jit(CFG.clickIntervalMs);
