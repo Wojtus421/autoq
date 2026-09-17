@@ -33,6 +33,7 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
+    shopMaxBuys: 8, // twardy limit zakupów na jedną wizytę w sklepie — bezpiecznik przed pętlą kupowania
     decisionPollMs: 300,
     collectExp: true,
     keyTalk: { key: 'q', code: 'KeyQ', keyCode: 81 },
@@ -522,7 +523,7 @@
       const i = options.findIndex(o => hasBit(o.code, bit));
       if (i >= 0) return { idx: i, why: CLASS_BY_BIT[bit] + ' (code ' + options[i].code + ')' };
     }
-    if (shopStageNames().length) {
+    if (missingShopNames().length) {
       const sh = options.findIndex(o => hasBit(o.code, BITS.SHOP));
       if (sh >= 0) { shopOpenedByBot = true; return { idx: sh, why: 'sklep (etap wymaga zakupu)' }; }
     }
@@ -596,7 +597,7 @@
 
     const clsOf = el => (el.className || '') + ' ' + [...el.querySelectorAll('[class*="line_"]')].map(c => c.className).join(' ');
     let idx = lines.findIndex(el => /line_(cont|new)_quest/.test(clsOf(el)));
-    if (idx < 0 && shopStageNames().length) {
+    if (idx < 0 && missingShopNames().length) {
       idx = lines.findIndex(el => /line_shop/.test(clsOf(el)));
       if (idx >= 0) shopOpenedByBot = true;
     }
@@ -864,16 +865,28 @@
         || null;
   }
 
-  let shopRotateIdx = 0;
+  // Etap questa dalej wymienia przedmiot także wtedy, gdy już go mamy
+  // (nazwa znika dopiero po oddaniu/użyciu). Bez sprawdzenia plecaka bot
+  // kupował ten sam przedmiot w kółko i nie wychodził ze sklepu.
+  function missingShopNames() {
+    return shopStageNames().filter(n => !findItemByName(n));
+  }
+
+  let shopRotateIdx = 0, shopBuyCount = 0;
   function buyQuestItems() {
-    const names = shopStageNames();
+    const names = missingShopNames();
     if (!names.length) return false;
+    if (shopBuyCount >= CFG.shopMaxBuys) {
+      log('sklep: limit ' + CFG.shopMaxBuys + ' zakupów na wizytę osiągnięty — nie kupuję dalej');
+      return false;
+    }
     for (let i = 0; i < names.length; i++) {
       const idx = (shopRotateIdx + i) % names.length;
       const name = names[idx];
       const it = findShopItemByName(name);
       if (!it) { log('przedmiotu "' + name + '" nie ma (jeszcze) w katalogu sklepu'); continue; }
       if (!gSend('shop&buy=' + it.slot + ',1&sell=')) continue;
+      shopBuyCount++;
       log('kupno:', it.name, '(slot ' + it.slot + ', id ' + it.id + ')',
           '(' + (i + 1) + '/' + names.length + ' w etapie)');
       shopRotateIdx = (idx + 1) % names.length;
@@ -1113,14 +1126,14 @@
       if (buyQuestItems()) { lastTalkAt = now; return; }
     }
 
-    if (shopOpenedByBot && isShopOpen() && !shopStageNames().length) {
+    if (shopOpenedByBot && isShopOpen() && !missingShopNames().length) {
       log('sklep: zakupy questowe zakończone — zamykam (Esc)');
       pressEsc();
       shopOpenedByBot = false;
       lastTalkAt = now;
       return;
     }
-    if (!isShopOpen()) shopOpenedByBot = false;
+    if (!isShopOpen()) { shopOpenedByBot = false; shopBuyCount = 0; }
 
     if (!currentTarget() && isAreaSearchQuest() && now - lastMoveAt > CFG.arrivalStableMs) {
       if (now - lastNudgeAt > CFG.nudgeCooldownMs) {
@@ -1556,7 +1569,7 @@
     isTrackedNpc, trackedTpls, npcList, npcInfo, gSend,
     pointerPositions, noteArrowNames, bagItems, itemInfo, findItemByName, itemNameFromQuest, itemNamesFromQuest, useQuestItem, isAreaSearchQuest, killQuestNames, keyName,
     loopBreakPick, dialogueLoopStatus: () => [...dialogueLoopTracker.entries()],
-    shopStageNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
+    shopStageNames, missingShopNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
     decisionTick, decisionDebug, findDecisionBox, togglePanel,
     restNow: (sec) => { restUntil = Date.now() + (sec || 60) * 1000; safe(updateBadge); log('wymuszona przerwa', (sec || 60) + 's'); },
     restStatus: () => ({ odpoczywa: Date.now() < restUntil, doKoncaS: Math.max(0, Math.round((restUntil - Date.now()) / 1000)), nastepnaZaS: Math.max(0, Math.round((nextRestAt - Date.now()) / 1000)) }),
