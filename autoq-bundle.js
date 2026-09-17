@@ -33,6 +33,7 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
+    qSkipMaxStreak: 3, // ile razy z rzędu wolno pominąć Q z powodu obcego NPC, zanim i tak spróbujemy
     itemMaxTries: 4, // ile razy próbować użyć/założyć ten sam przedmiot, zanim odpuścimy
     shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
     decisionPollMs: 300,
@@ -1106,13 +1107,24 @@
       .filter(n => chebyshev({ x: n.x, y: n.y }, { x: h.x, y: h.y }) <= CFG.talkRadius)
       .find(n => String(n.id) !== targetId) || null;
   }
+  let qSkipStreak = 0;
   function pressQSafe(t) {
     const foreign = foreignNpcNear(t);
-    if (foreign) {
+    if (!foreign) { qSkipStreak = 0; return pressQ(); }
+    // Blokada Q chroni przed zagadaniem przypadkowego NPC-a, ale bez
+    // zaworu bezpieczeństwa potrafi zakleszczyć bota: przy braku celu
+    // KAŻDY NPC jest "obcy", a obiekty questowe (piec, kowadło) same
+    // bywają NPC-ami. Po kilku pominięciach przepuszczamy Q, bo stanie
+    // w miejscu jest gorsze niż ryzyko niepotrzebnej rozmowy.
+    if (qSkipStreak < CFG.qSkipMaxStreak) {
+      qSkipStreak++;
       log('pomijam Q — w zasięgu obcy NPC', foreign.name || foreign.id,
-          '(Q zagadałoby jego, nie cel)');
+          '(' + qSkipStreak + '/' + CFG.qSkipMaxStreak + ')');
       return false;
     }
+    log('Q mimo obcego NPC w zasięgu — ' + CFG.qSkipMaxStreak +
+        ' pominięć z rzędu, nie stoję bezczynnie');
+    qSkipStreak = 0;
     return pressQ();
   }
   const pressE = () => { const k = CFG.keyAttack; pressKey(k.key, k.code, k.keyCode); log('wciśnięto ' + keyName(k) + ' (atak)'); return true; };
@@ -1141,6 +1153,19 @@
 
     const rec = talkCount.get(t.key) || { n: 0, mode: looksMob ? 'attack' : 'talk', switched: false };
     rec.n++;
+
+    // Obiekty questowe (piec, kowadło...) są w silniku NPC-ami z lvl 0.
+    // Przełączanie ich na atak niczego nie da — tylko zużywa próby.
+    const attackPointless = rec.mode === 'talk' && !looksMob &&
+                            (d0.lvl === undefined || +d0.lvl === 0);
+
+    if (rec.n > CFG.sameTargetMaxTalks && !rec.switched && attackPointless) {
+      log('cel', t.npc.name || t.npc.id, '— obiekt (lvl 0), atak nie ma sensu, skreślam');
+      markDone(t, 'obiekt nie reaguje na rozmowę');
+      talkCount.delete(t.key);
+      state = 'NAV'; talkTries = 0; lastKey = '';
+      return false;
+    }
 
     if (rec.n > CFG.sameTargetMaxTalks && !rec.switched) {
       rec.mode = rec.mode === 'attack' ? 'talk' : 'attack';
