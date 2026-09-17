@@ -1146,18 +1146,34 @@
     // (ARRIVED, itp.) zostaje dłuższy, bezpieczniejszy próg idleFallbackMs.
     const scanThreshold = state === 'NAV' ? CFG.navScanMs : CFG.idleFallbackMs;
     if (now - lastActivity > scanThreshold) {
-      lastTalkAt = now;
       tplCache = { at: 0, val: [] };
       knownNames.clear();
       lastPtrLogged = '';
-      const npc = (t && t.npc) || npcInfo(safe(() => E().questTracking.getNearTrackingNpc()));
-      if (npc && gSend('talk&id=' + npc.id)) {
-        log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
-      } else if (!npc) {
-        log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
-        pressQ();
+      // Cel-kafelek (przejście, miejsce na mapie) nie jest rozmową. Wcześniej
+      // skan spadał tu do getNearTrackingNpc() i wymuszał talk z pierwszym
+      // lepszym NPC-em stojącym obok przejścia — a że gałąź kończyła się
+      // return-em, nawigacja do samego przejścia nigdy nie ruszała. Efekt:
+      // nieskończona pętla gadania z przypadkową postacią.
+      const tileOnly = t && t.tile && !t.npc;
+      if (tileOnly) {
+        lastTalkAt = now; // trzymaj skan w rytmie navScanMs, nie co tick
+        lastClickAt = 0;  // odblokuj nawigację od razu
+        log('skan (' + (scanThreshold / 1000) + 's) — cel to kafelek ' +
+            t.tile.x + ',' + t.tile.y + ', odświeżam i idę dalej');
+      } else {
+        lastTalkAt = now;
+        const cand = (t && t.npc) || npcInfo(safe(() => E().questTracking.getNearTrackingNpc()));
+        // getNearTrackingNpc() nie zna doneTargets — bez tego bot wracał
+        // do rozmowy z NPC-em już odhaczonym jako załatwiony.
+        const npc = cand && !doneTargets.has('npc:' + cand.id) ? cand : null;
+        if (npc && gSend('talk&id=' + npc.id)) {
+          log('skan (' + (scanThreshold / 1000) + 's) — wymuszam rozmowę z', npc.name || npc.id);
+        } else if (!npc) {
+          log('skan (' + (scanThreshold / 1000) + 's) — brak NPC-celu, odświeżam i symuluję Q');
+          pressQ();
+        }
+        return;
       }
-      return;
     }
 
     if (!t) return;
