@@ -33,6 +33,7 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
+    itemMaxTries: 4, // ile razy próbować użyć/założyć ten sam przedmiot, zanim odpuścimy
     shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
     decisionPollMs: 300,
     collectExp: true,
@@ -908,6 +909,12 @@
   function isShopOpen() { return shopItems().length > 0; }
 
   let itemRotateIdx = 0;
+  const itemTries = new Map();
+  // Zakładanie to moveitem&st=1, więc przedmiot już założony ma st=1
+  // i komenda staje się bezczynna. Etap questa nadal wymienia jego nazwę,
+  // więc bez tej kontroli bot zakładał go w nieskończoność.
+  const isEquipped = it => it && String(it.st) === '1';
+
   function useQuestItem() {
     const names = itemNamesFromQuest();
     if (!names.length) { log('nie znalazłem nazwy przedmiotu w etapie questa'); return false; }
@@ -917,9 +924,18 @@
       const name = names[idx];
       const it = findItemByName(name);
       if (!it) { log('przedmiotu "' + name + '" nie ma w plecaku'); continue; }
+      if (isEquipped(it)) { log('przedmiot "' + it.name + '" jest już założony — pomijam'); continue; }
+      // Bezpiecznik na wypadek przedmiotów, których stanu nie da się
+      // odczytać (st puste) — bez limitu byłaby to pętla bez końca.
+      const tries = (itemTries.get(it.id) || 0) + 1;
+      if (tries > CFG.itemMaxTries) {
+        log('przedmiot "' + it.name + '" — ' + CFG.itemMaxTries + ' prób bez efektu, odpuszczam');
+        continue;
+      }
+      itemTries.set(it.id, tries);
       if (!gSend('moveitem&st=1&id=' + it.id)) continue;
       log('użycie/założenie przedmiotu:', it.name, '(id ' + it.id + ')',
-          '(' + (i + 1) + '/' + names.length + ' w etapie)');
+          '(' + (i + 1) + '/' + names.length + ' w etapie, próba ' + tries + ')');
       itemRotateIdx = (idx + 1) % names.length;
       return true;
     }
@@ -949,6 +965,7 @@
     talkTries = 0;
     moved = false;
     shopOpenedByBot = false;
+    itemTries.clear();
     dialogueLoopTracker.clear();
   }
 
