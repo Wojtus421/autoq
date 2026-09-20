@@ -46,6 +46,10 @@
     idleFallbackMs: 10000,
     navScanMs: 3000, // cykliczny skan nawigacji w stanie NAV — nie czekamy pełnych idleFallbackMs na bezruch
     questBitPriority: [BITS.CONT_QUEST, BITS.NEW_QUEST],
+    // Nie zaczynaj NOWEGO questa, dopóki trwa inny. Chain questów nadal
+    // działa: kolejne ogniwo pojawia się dopiero po oddaniu poprzedniego
+    // (linia "cont"), a wtedy aktywnego zadania już nie ma.
+    avoidNewQuestWhileActive: true,
     avoidBits: [BITS.EXIT],
     skipRe: /pomiń/i,
     loopBreakAfter: 2,
@@ -519,11 +523,25 @@
     return { pick, tries: rec.count, cycle, total: nonExitIdxs.length };
   }
 
+  // Czy mamy w tej chwili aktywne śledzone zadanie?
+  function hasActiveQuest() {
+    return !!safe(() => E().questTracking && E().questTracking.getActiveServerTrackingQuest());
+  }
+  // Czy w tym dialogu wolno przyjąć nowe zadanie?
+  function blockNewQuest() {
+    return CFG.avoidNewQuestWhileActive && hasActiveQuest();
+  }
+
   function pickOption(options) {
     if (options.length === 1) return { idx: 0, why: 'jedyna opcja' };
-    for (const bit of CFG.questBitPriority) {
+    const blockNew = blockNewQuest();
+    const prio = blockNew ? CFG.questBitPriority.filter(x => x !== BITS.NEW_QUEST) : CFG.questBitPriority;
+    for (const bit of prio) {
       const i = options.findIndex(o => hasBit(o.code, bit));
       if (i >= 0) return { idx: i, why: CLASS_BY_BIT[bit] + ' (code ' + options[i].code + ')' };
+    }
+    if (blockNew && options.some(o => hasBit(o.code, BITS.NEW_QUEST))) {
+      log('pomijam linię nowego zadania — mam już aktywny quest');
     }
     if (missingShopNames().length) {
       const sh = options.findIndex(o => hasBit(o.code, BITS.SHOP));
@@ -532,7 +550,8 @@
     const s = options.findIndex(o => CFG.skipRe.test(o.text || ''));
     if (s >= 0) return { idx: s, why: 'pomiń przerywnik' };
 
-    const nonExitIdxs = options.map((o, i) => i).filter(i => !CFG.avoidBits.some(b => hasBit(options[i].code, b)));
+    const avoid = blockNew ? CFG.avoidBits.concat(BITS.NEW_QUEST) : CFG.avoidBits;
+    const nonExitIdxs = options.map((o, i) => i).filter(i => !avoid.some(b => hasBit(options[i].code, b)));
     const lb = loopBreakPick(nonExitIdxs, options.map(o => o.text || ''));
     if (lb) return { idx: lb.pick, why: 'łamanie pętli (próba ' + lb.tries + ', opcja ' + lb.cycle + '/' + lb.total + ')' };
 
@@ -598,14 +617,20 @@
     if (!lines.length) return false;
 
     const clsOf = el => (el.className || '') + ' ' + [...el.querySelectorAll('[class*="line_"]')].map(c => c.className).join(' ');
-    let idx = lines.findIndex(el => /line_(cont|new)_quest/.test(clsOf(el)));
+    const blockNew = blockNewQuest();
+    let idx = lines.findIndex(el => /line_cont_quest/.test(clsOf(el)));
+    if (idx < 0 && !blockNew) idx = lines.findIndex(el => /line_new_quest/.test(clsOf(el)));
+    else if (idx < 0 && lines.some(el => /line_new_quest/.test(clsOf(el)))) {
+      log('pomijam linię nowego zadania (DOM) — mam już aktywny quest');
+    }
     if (idx < 0 && missingShopNames().length) {
       idx = lines.findIndex(el => /line_shop/.test(clsOf(el)));
       if (idx >= 0) shopOpenedByBot = true;
     }
     if (idx < 0) idx = lines.findIndex(el => CFG.skipRe.test(el.textContent || ''));
     if (idx < 0) {
-      const nonExitIdxs = lines.map((el, i) => i).filter(i => !/line_exit/.test(clsOf(lines[i])));
+      const skipRe2 = blockNew ? /line_exit|line_new_quest/ : /line_exit/;
+      const nonExitIdxs = lines.map((el, i) => i).filter(i => !skipRe2.test(clsOf(lines[i])));
       const lb = loopBreakPick(nonExitIdxs, lines.map(el => el.textContent || ''));
       if (lb) {
         idx = lb.pick;
@@ -1693,6 +1718,7 @@
     isTrackedNpc, trackedTpls, npcList, npcInfo, gSend,
     pointerPositions, noteArrowNames, bagItems, itemInfo, findItemByName, itemNameFromQuest, itemNamesFromQuest, useQuestItem, isAreaSearchQuest, killQuestNames, keyName,
     loopBreakPick, dialogueLoopStatus: () => [...dialogueLoopTracker.entries()],
+    hasActiveQuest, blockNewQuest,
     shopStageNames, missingShopNames, buyableMissingNames, shopItems, shopItemInfo, findShopItemByName, buyQuestItems, isShopOpen, pressEsc,
     decisionTick, decisionDebug, findDecisionBox, togglePanel,
     restNow: (sec) => { restUntil = Date.now() + (sec || 60) * 1000; safe(updateBadge); log('wymuszona przerwa', (sec || 60) + 's'); },
