@@ -76,6 +76,11 @@
   };
 
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  const AUTOQ_VERSION = '10.3';
+  // Środowisko i datę aktualizacji podaje loader (window.__AUTOQ_META),
+  // bo sam bundle jest wstrzykiwany jako treść i nie wie, z którego
+  // brancha przyszedł. Starszy loader tego nie ustawia — wtedy "nieznane".
+  const autoqMeta = () => W.__AUTOQ_META || {};
   let running = false;
   const log = (...a) => CFG.debug && console.log('%c[MQ]', 'color:#6cf;font-weight:bold', ...a);
   const safe = fn => { try { return fn(); } catch (e) { return null; } };
@@ -1526,7 +1531,7 @@
 
   let panel = null;
   function togglePanel() {
-    if (panel) { panel.remove(); panel = null; return; }
+    if (panel) { clearInterval(panel._metaTimer); panel.remove(); panel = null; return; }
     const host = document.body || document.documentElement;
     if (!host) return;
     panel = document.createElement('div');
@@ -1670,7 +1675,58 @@
     hint.style.cssText = 'margin-top:8px;color:#888;font-size:10px;line-height:1.3;';
     panel.appendChild(hint);
 
+    const foot = document.createElement('div');
+    foot.style.cssText = 'margin-top:8px;border-top:1px solid #444;padding-top:6px;' +
+      'color:#999;font-size:10px;line-height:1.5;';
+    const renderFoot = () => {
+      const m = autoqMeta();
+      const env = m.env === 'prod' ? 'PROD' : m.env === 'test' ? 'TEST' : 'nieznane';
+      const envColor = m.env === 'prod' ? '#6c6' : m.env === 'test' ? '#fc6' : '#999';
+      let upd;
+      if (m.commitDate) {
+        const ms = Date.now() - Date.parse(m.commitDate);
+        upd = Number.isFinite(ms) ? timeAgo(ms) : 'nieznana';
+        if (m.sha) upd += ' (' + String(m.sha).slice(0, 7) + ')';
+      } else {
+        upd = m.env ? (m.commitError ? 'brak danych' : 'sprawdzam…') : 'nieznana';
+      }
+      foot.innerHTML = '';
+      const line = (label, value, color) => {
+        const r = document.createElement('div');
+        const l = document.createElement('span');
+        l.textContent = label + ': ';
+        const v = document.createElement('span');
+        v.textContent = value;
+        if (color) v.style.color = color;
+        r.appendChild(l); r.appendChild(v);
+        foot.appendChild(r);
+      };
+      line('Wersja', AUTOQ_VERSION);
+      line('Środowisko', env, envColor);
+      line('Aktualizacja', upd);
+    };
+    renderFoot();
+    panel._metaTimer = setInterval(renderFoot, 1000);
+    panel.appendChild(foot);
+
     host.appendChild(panel);
+  }
+
+  // Polska odmiana: 1 minutę / 2 minuty / 5 minut (12–14 zawsze "minut").
+  function plPlural(n, one, few, many) {
+    if (n === 1) return one;
+    const d = n % 10, dd = n % 100;
+    return (d >= 2 && d <= 4 && !(dd >= 12 && dd <= 14)) ? few : many;
+  }
+  function timeAgo(ms) {
+    const sec = Math.max(0, Math.floor(ms / 1000));
+    if (sec < 60) return sec + ' ' + plPlural(sec, 'sekundę', 'sekundy', 'sekund') + ' temu';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + ' ' + plPlural(min, 'minutę', 'minuty', 'minut') + ' temu';
+    const h = Math.floor(min / 60);
+    if (h < 24) return h + ' ' + plPlural(h, 'godzinę', 'godziny', 'godzin') + ' temu';
+    const d = Math.floor(h / 24);
+    return d + ' ' + (d === 1 ? 'dzień' : 'dni') + ' temu';
   }
 
   let badge = null;
