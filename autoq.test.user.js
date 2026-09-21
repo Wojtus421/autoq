@@ -1,15 +1,15 @@
 // ==UserScript==
-// @name         AutoQ — Margonem auto quest
+// @name         AutoQ — Margonem auto quest [TESTING]
 // @namespace    Wojtus
-// @version      10.3
-// @description  Loader: wstrzykuje najnowszy bundle AutoQ przy każdym wejściu (bez cyklu Tampermonkey)
+// @version      10.3-test
+// @description  Loader: wstrzykuje bundle AutoQ z brancha testing (do testow przed merge do main)
 // @match        https://*.margonem.pl/*
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
 // @connect      api.github.com
 // @run-at       document-start
-// @downloadURL  https://raw.githubusercontent.com/Wojtus421/autoq/main/autoq.user.js
-// @updateURL    https://raw.githubusercontent.com/Wojtus421/autoq/main/autoq.user.js
+// @downloadURL  https://raw.githubusercontent.com/Wojtus421/autoq/testing/autoq.test.user.js
+// @updateURL    https://raw.githubusercontent.com/Wojtus421/autoq/testing/autoq.test.user.js
 // ==/UserScript==
 
 // Ten plik to tylko loader — właściwa logika AutoQ mieszka w autoq-bundle.js
@@ -26,8 +26,8 @@
 (function () {
   'use strict';
   const REPO = 'Wojtus421/autoq';
-  const BRANCH = 'main';
-  const ENV = 'prod';
+  const BRANCH = 'testing';
+  const ENV = 'test';
 
   // Loader działa w sandboksie Tampermonkey — do kontekstu strony
   // docieramy wstrzykując inline <script>.
