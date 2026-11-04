@@ -37,6 +37,11 @@
     autoNextQuest: true,
     autoNextQuestGroup: 20,   // 20 = grupa "Event"; null = dowolna grupa
     autoNextQuestDelayMs: 2500, // odczekanie po zakończeniu, zanim przełączymy
+    // Automatyczne przyjmowanie DOSTĘPNYCH questów (zakładka "Dostępne").
+    autoTakeQuests: true,
+    autoTakeGroup: 20,          // 20 = Event; null = dowolna grupa
+    autoTakeScanMs: 60000,      // co ile skanować dostępne questy
+    autoTakeRenderMs: 1500,     // ile czekać na odpowiedź serwera po komendzie show
     qSkipMaxStreak: 3, // ile razy z rzędu wolno pominąć Q z powodu obcego NPC, zanim i tak spróbujemy
     itemMaxTries: 4, // ile razy próbować użyć/założyć ten sam przedmiot, zanim odpuścimy
     shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
@@ -1008,6 +1013,63 @@
     const v = safe(() => E().questTracking.getActiveServerTrackingQuest());
     return v === null || v === undefined ? null : String(v);
   }
+  // ===== PRZYJMOWANIE DOSTĘPNYCH QUESTÓW =====
+  // Dostępne questy nie istnieją w magazynie — gra renderuje je dopiero po
+  // komendzie "quests&action=show". Okno nie musi być otwarte: wiersze trafiają
+  // do .quest-window także przy ukrytym dzienniku.
+
+  // Podgrupy należące do wybranej grupy (np. eventowej).
+  function subgroupsOfGroup(groupId) {
+    const st = questStorage();
+    const subs = st && safe(() => st.getSubgroups());
+    if (!subs) return [];
+    return Object.values(subs)
+      .filter(sg => sg && (groupId === null || groupId === undefined || +sg.groupId === +groupId))
+      .map(sg => sg.id);
+  }
+
+  // Wiersze wyrenderowane w oknie questów: "13050(40)Spektakl: Antygona"
+  function renderedQuestRows() {
+    const w = document.querySelector('.quest-window');
+    if (!w) return [];
+    return [...w.querySelectorAll('.quest-header')].map(r => {
+      const t = (r.textContent || '').trim();
+      const m = t.match(/^(\d+)\s*\((\d+)\)\s*(.+)$/);
+      return m ? { id: m[1], lvl: +m[2], name: m[3].trim() } : null;
+    }).filter(Boolean);
+  }
+
+  let takeScanAt = 0, takeBusy = false;
+  function scanAndTakeQuests(now) {
+    if (!CFG.autoTakeQuests || takeBusy) return;
+    if (takeScanAt && now - takeScanAt < CFG.autoTakeScanMs) return;
+    takeScanAt = now;
+
+    const subs = subgroupsOfGroup(CFG.autoTakeGroup);
+    if (!subs.length) return;
+
+    takeBusy = true;
+    gSend('quests&action=open&tab=available');
+    for (const sid of subs) gSend('quests&action=show&tab=available&subgroupId=' + sid + '&page=0');
+
+    setTimeout(() => {
+      takeBusy = false;
+      // Gra DOPISUJE wiersze do okna, więc w DOM zostają też questy już
+      // posiadane — odfiltrowujemy je po magazynie.
+      const mine = new Set(activeQuests().map(q => String(safe(() => q.getId()))));
+      const fresh = renderedQuestRows().filter(r => !mine.has(r.id));
+      if (!fresh.length) return;
+      for (const r of fresh) {
+        if (gSend('quests&action=start&id=' + r.id)) log('przyjmuję zadanie:', r.name, '(id ' + r.id + ')');
+      }
+    }, CFG.autoTakeRenderMs);
+  }
+
+  window.MQ_available = () => ({
+    podgrupy: subgroupsOfGroup(CFG.autoTakeGroup),
+    wyrenderowane: renderedQuestRows(),
+  });
+
   // Kolejny quest do zrobienia: nieukończony, inny niż śledzony,
   // z wybranej grupy (domyślnie eventowej).
   function nextQuestCandidate() {
@@ -1328,6 +1390,7 @@
     if (lastQuestSig === null) lastQuestSig = qsig;
     else if (qsig !== lastQuestSig) { lastQuestSig = qsig; onQuestChange(); }
 
+    scanAndTakeQuests(now);
     if (maybeSwitchQuest(now)) return;
 
     if (huntName) {
