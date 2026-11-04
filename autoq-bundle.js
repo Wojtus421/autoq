@@ -33,6 +33,10 @@
     nudgeCooldownMs: 1500,
     nudgeGhostGiveUpTries: 3,
     itemRetryMs: 4000,
+    // Auto-przełączanie na kolejny quest po skończeniu bieżącego.
+    autoNextQuest: true,
+    autoNextQuestGroup: 20,   // 20 = grupa "Event"; null = dowolna grupa
+    autoNextQuestDelayMs: 2500, // odczekanie po zakończeniu, zanim przełączymy
     qSkipMaxStreak: 3, // ile razy z rzędu wolno pominąć Q z powodu obcego NPC, zanim i tak spróbujemy
     itemMaxTries: 4, // ile razy próbować użyć/założyć ten sam przedmiot, zanim odpuścimy
     shopMaxBuys: 25, // twardy limit zakupów na jedną wizytę — bezpiecznik przed pętlą (etapy potrafią wymagać kilkunastu rzeczy)
@@ -973,6 +977,93 @@
     return false;
   }
 
+  // ===== AUTO-PRZEŁĄCZANIE NA KOLEJNY QUEST =====
+  // getActiveQuests() zwraca WSZYSTKIE posiadane questy (ukończone trafiają
+  // do osobnego zbioru i tu nie występują). Quest uznajemy za zrobiony, gdy
+  // każda jego misja ma isDone === true.
+
+  function questStorage() {
+    return safe(() => E().questsManager.getQuestStorage());
+  }
+  function activeQuests() {
+    const st = questStorage();
+    const act = st && safe(() => st.getActiveQuests());
+    if (!act) return [];
+    return Object.values(act).filter(Boolean);
+  }
+  function questInfo(q) {
+    const get = (fn, def) => { const v = safe(() => q[fn]()); return v === null || v === undefined ? def : v; };
+    const missions = get('getMissions', null);
+    const list = (missions && Array.isArray(missions.list)) ? missions.list : [];
+    return {
+      id: String(get('getId', '')),
+      name: get('getName', '?'),
+      groupId: get('getGroupId', null),
+      missions: list,
+      // brak misji = nie wiemy nic o postępie, więc NIE uznajemy za zrobiony
+      finished: list.length > 0 && list.every(m => m && m.isDone === true),
+    };
+  }
+  function trackedQuestId() {
+    const v = safe(() => E().questTracking.getActiveServerTrackingQuest());
+    return v === null || v === undefined ? null : String(v);
+  }
+  // Kolejny quest do zrobienia: nieukończony, inny niż śledzony,
+  // z wybranej grupy (domyślnie eventowej).
+  function nextQuestCandidate() {
+    const tracked = trackedQuestId();
+    const want = CFG.autoNextQuestGroup;
+    return activeQuests().map(questInfo).find(q =>
+      q.id && q.id !== tracked && !q.finished &&
+      (want === null || want === undefined || +q.groupId === +want)
+    ) || null;
+  }
+  function startTracking(id) {
+    // toggleTracking przełącza tę samą drogą, którą robi to interfejs gry
+    if (safe(() => { E().questTracking.toggleTracking(id); return 1; })) return true;
+    return !!safe(() => { E().questTracking.setActiveServerTrackingQuest(id); return 1; });
+  }
+
+  let nextQuestAt = 0;
+  function maybeSwitchQuest(now) {
+    if (!CFG.autoNextQuest) return false;
+
+    const tracked = trackedQuestId();
+    if (tracked) {
+      // Śledzony quest jeszcze trwa? Nic nie robimy.
+      const cur = activeQuests().map(questInfo).find(q => q.id === tracked);
+      if (cur && !cur.finished) { nextQuestAt = 0; return false; }
+    }
+
+    const cand = nextQuestCandidate();
+    if (!cand) { nextQuestAt = 0; return false; }
+
+    // Krótka zwłoka: po oddaniu questa gra potrzebuje chwili na odświeżenie
+    // dziennika, a bez tego łapalibyśmy nieaktualny stan.
+    if (!nextQuestAt) {
+      nextQuestAt = now + CFG.autoNextQuestDelayMs;
+      log('bieżące zadanie zakończone — za', CFG.autoNextQuestDelayMs / 1000, 's włączę nawigację na:', cand.name);
+      return false;
+    }
+    if (now < nextQuestAt) return false;
+    nextQuestAt = 0;
+
+    if (startTracking(cand.id)) {
+      log('włączam nawigację na zadanie:', cand.name, '(id ' + cand.id + ')');
+      onQuestChange();
+      return true;
+    }
+    log('nie udało się włączyć nawigacji na:', cand.name, '(id ' + cand.id + ')');
+    return false;
+  }
+
+  window.MQ_quests = () => ({
+    sledzony: trackedQuestId(),
+    kolejny: nextQuestCandidate(),
+    wszystkie: activeQuests().map(questInfo).map(q =>
+      ({ id: q.id, nazwa: q.name, grupa: q.groupId, zrobiony: q.finished, misji: q.missions.length })),
+  });
+
   function questSignature() {
     const list = (safe(() => E().questsObserve && E().questsObserve.list)) || {};
     return Object.keys(list).filter(k => list[k]).sort().join(',');
@@ -1236,6 +1327,8 @@
     const qsig = questSignature();
     if (lastQuestSig === null) lastQuestSig = qsig;
     else if (qsig !== lastQuestSig) { lastQuestSig = qsig; onQuestChange(); }
+
+    if (maybeSwitchQuest(now)) return;
 
     if (huntName) {
       const kq = killQuestNames();
